@@ -118,6 +118,24 @@ def _is_retryable_cpa_error(error: Exception) -> bool:
     return any(marker in message for marker in retryable_markers)
 
 
+def _sanitize_cpa_error_message(error: Exception, raw_url: str = "") -> str:
+    message = str(error)
+    raw = str(raw_url or "").strip()
+    if not raw:
+        return message
+    parsed = urlparse(raw)
+    redactions = [raw]
+    if parsed.netloc:
+        redactions.append(parsed.netloc)
+    if parsed.hostname:
+        redactions.append(parsed.hostname)
+    sanitized = message
+    for token in redactions:
+        if token:
+            sanitized = sanitized.replace(token, "<upload-target-redacted>")
+    return sanitized
+
+
 def _cpa_request_with_retry(request_fn, action_desc: str):
     last_error = None
     for attempt in range(1, CPA_REQUEST_RETRIES + 1):
@@ -127,7 +145,10 @@ def _cpa_request_with_retry(request_fn, action_desc: str):
             last_error = error
             if attempt >= CPA_REQUEST_RETRIES or not _is_retryable_cpa_error(error):
                 raise
-            print(f"[检测] {action_desc} 异常，第 {attempt}/{CPA_REQUEST_RETRIES} 次重试前等待 {CPA_RETRY_DELAY_SECONDS} 秒: {error}")
+            print(
+                f"[检测] {action_desc} 异常，第 {attempt}/{CPA_REQUEST_RETRIES} 次重试前等待 "
+                f"{CPA_RETRY_DELAY_SECONDS} 秒: {_sanitize_cpa_error_message(error, os.environ.get('UPLOAD_API_URL', ''))}"
+            )
             time.sleep(CPA_RETRY_DELAY_SECONDS)
     raise last_error
 
@@ -199,7 +220,7 @@ def count_valid_accounts_by_probe(cfg: dict) -> int:
         data = resp.json()
         files = data.get("files", []) if isinstance(data, dict) else []
     except Exception as e:
-        print(f"[检测] 拉取 auth-files 异常: {e}，回退本地统计")
+        print(f"[检测] 拉取 auth-files 异常: {_sanitize_cpa_error_message(e, api_url)}，回退本地统计")
         return count_valid_accounts_local(cfg)
 
     total_files = len(files)
@@ -296,7 +317,7 @@ def count_valid_accounts_by_probe(cfg: dict) -> int:
                 else:
                     print(f"[检测] 删除失败: {name} -> HTTP {dr.status_code}")
             except Exception as e:
-                print(f"[检测] 删除异常: {name} -> {e}")
+                print(f"[检测] 删除异常: {name} -> {_sanitize_cpa_error_message(e, api_url)}")
         print(f"[检测] 已删除 {deleted}/{len(invalid_names)} 个无效账号")
 
     return estimated_valid

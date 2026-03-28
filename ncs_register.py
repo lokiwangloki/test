@@ -761,6 +761,23 @@ def _save_codex_tokens(email: str, tokens: dict):
 
 
 def _upload_token_json(filepath):
+    def _sanitize_cpa_error_message(error: Exception) -> str:
+        message = str(error)
+        raw_url = str(UPLOAD_API_URL or "").strip()
+        if not raw_url:
+            return message
+        parsed = urlparse(raw_url)
+        redactions = [raw_url]
+        if parsed.netloc:
+            redactions.append(parsed.netloc)
+        if parsed.hostname:
+            redactions.append(parsed.hostname)
+        sanitized = message
+        for token in redactions:
+            if token:
+                sanitized = sanitized.replace(token, "<upload-target-redacted>")
+        return sanitized
+
     def _resolve_upload_proxy_candidates() -> list:
         raw = (UPLOAD_API_PROXY or "").strip()
         if raw:
@@ -810,10 +827,11 @@ def _upload_token_json(filepath):
             return False
         except Exception as e:
             last_exception = e
+            safe_error = _sanitize_cpa_error_message(e)
             if proxy and idx < len(proxy_candidates) - 1:
-                print(f"  [CPA] ⚠️ {filename} 通过代理上传异常，改为直连重试: {e}")
+                print(f"  [CPA] ⚠️ {filename} 通过代理上传异常，改为直连重试: {safe_error}")
                 continue
-            print(f"  [CPA] ❌ {filename} 上传异常: {e}")
+            print(f"  [CPA] ❌ {filename} 上传异常: {safe_error}")
             return False
         finally:
             if mp:
@@ -825,7 +843,7 @@ def _upload_token_json(filepath):
                     pass
 
     if last_exception:
-        print(f"  [CPA] ❌ {filename} 上传异常: {last_exception}")
+        print(f"  [CPA] ❌ {filename} 上传异常: {_sanitize_cpa_error_message(last_exception)}")
     return False
 
 
