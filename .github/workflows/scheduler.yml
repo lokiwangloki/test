@@ -27,6 +27,31 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+      - name: Diagnose CPA DNS
+        env:
+          UPLOAD_API_URL: ${{ secrets.UPLOAD_API_URL }}
+        run: |
+          python - <<'PY'
+          from urllib.parse import urlparse
+          import os
+
+          raw = os.environ.get("UPLOAD_API_URL", "").strip()
+          parsed = urlparse(raw)
+          print(f"UPLOAD_API_URL set: {'yes' if raw else 'no'}")
+          print(f"CPA host: {parsed.hostname or 'missing'}")
+          print(f"CPA path: {parsed.path or '/'}")
+          PY
+          host=$(python - <<'PY'
+          from urllib.parse import urlparse
+          import os
+          print(urlparse(os.environ.get("UPLOAD_API_URL", "")).hostname or "")
+          PY
+          )
+          if [ -n "$host" ]; then
+            getent hosts "$host" || nslookup "$host" || true
+            curl -I --max-time 15 "https://$host" || true
+          fi
+
       - name: Run auto_scheduler
         env:
           PYTHONUNBUFFERED: 1

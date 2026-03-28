@@ -74,6 +74,35 @@ class ProxyNormalizationTests(unittest.TestCase):
         workflow = Path(".github/workflows/scheduler.yml").read_text(encoding="utf-8")
         self.assertIn("cron: '7 * * * *'", workflow)
 
+    def test_auto_scheduler_retries_transient_auth_files_dns_error(self):
+        class FakeResponse:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"files": []}
+
+        transient_error = Exception(
+            "Failed to perform, curl: (6) Could not resolve host: cpa.lokiwang.ccwu.cc"
+        )
+        fake_requests = sys.modules["curl_cffi"].requests
+        with mock.patch.object(fake_requests, "get", side_effect=[transient_error, FakeResponse()], create=True) as get_mock:
+            with mock.patch("auto_scheduler.count_valid_accounts_local", return_value=123) as local_count_mock:
+                with mock.patch("auto_scheduler.time.sleep") as sleep_mock:
+                    count = auto_scheduler.count_valid_accounts_by_probe({
+                        "upload_api_url": "https://cpa.lokiwang.ccwu.cc/v0/management/auth-files",
+                        "upload_api_token": "token",
+                    })
+
+        self.assertEqual(count, 0)
+        self.assertEqual(get_mock.call_count, 2)
+        sleep_mock.assert_called_once()
+        local_count_mock.assert_not_called()
+
+    def test_scheduler_workflow_includes_cpa_dns_diagnostics(self):
+        workflow = Path(".github/workflows/scheduler.yml").read_text(encoding="utf-8")
+        self.assertIn("Diagnose CPA DNS", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

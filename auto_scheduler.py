@@ -35,6 +35,8 @@ AUTO_PARAMS = {
 PROBE_MAX_COUNT = 0        # 每次最多探测多少个账号（0 = 不限制，全部探测）
 PROBE_WORKERS = 12           # 探测并发数
 PROBE_TIMEOUT = 10           # 单次探测超时（秒）
+CPA_REQUEST_RETRIES = 3
+CPA_RETRY_DELAY_SECONDS = 2
 
 
 # ================= 加载 config.json =================
@@ -100,6 +102,36 @@ def _cpa_api_call_url(auth_files_url: str) -> str:
     return auth_files_url.replace("/auth-files", "/api-call")
 
 
+def _is_retryable_cpa_error(error: Exception) -> bool:
+    message = str(error).lower()
+    retryable_markers = (
+        "could not resolve host",
+        "temporary failure in name resolution",
+        "name or service not known",
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection aborted",
+        "connection refused",
+        "network is unreachable",
+    )
+    return any(marker in message for marker in retryable_markers)
+
+
+def _cpa_request_with_retry(request_fn, action_desc: str):
+    last_error = None
+    for attempt in range(1, CPA_REQUEST_RETRIES + 1):
+        try:
+            return request_fn()
+        except Exception as error:
+            last_error = error
+            if attempt >= CPA_REQUEST_RETRIES or not _is_retryable_cpa_error(error):
+                raise
+            print(f"[检测] {action_desc} 异常，第 {attempt}/{CPA_REQUEST_RETRIES} 次重试前等待 {CPA_RETRY_DELAY_SECONDS} 秒: {error}")
+            time.sleep(CPA_RETRY_DELAY_SECONDS)
+    raise last_error
+
+
 # ================= 有效账号检测（本地回退） =================
 
 def count_valid_accounts_local(cfg: dict) -> int:
@@ -157,7 +189,10 @@ def count_valid_accounts_by_probe(cfg: dict) -> int:
 
     # ---- 1. 拉取 auth-files 列表 ----
     try:
-        resp = curl_requests.get(list_url, headers=headers, timeout=15)
+        resp = _cpa_request_with_retry(
+            lambda: curl_requests.get(list_url, headers=headers, timeout=15),
+            "拉取 auth-files",
+        )
         if resp.status_code != 200:
             print(f"[检测] 拉取 auth-files 失败: {resp.status_code}，回退本地统计")
             return count_valid_accounts_local(cfg)
@@ -209,8 +244,11 @@ def count_valid_accounts_by_probe(cfg: dict) -> int:
             ),
         }
         try:
-            r = curl_requests.post(
-                api_call_url, headers=headers, json=payload, timeout=PROBE_TIMEOUT
+            r = _cpa_request_with_retry(
+                lambda: curl_requests.post(
+                    api_call_url, headers=headers, json=payload, timeout=PROBE_TIMEOUT
+                ),
+                f"探测账号 {name or auth_index}",
             )
             r.raise_for_status()
             body = r.json()
@@ -247,8 +285,11 @@ def count_valid_accounts_by_probe(cfg: dict) -> int:
         deleted = 0
         for name in invalid_names:
             try:
-                dr = curl_requests.delete(
-                    list_url, params={"name": name}, headers=headers, timeout=10
+                dr = _cpa_request_with_retry(
+                    lambda: curl_requests.delete(
+                        list_url, params={"name": name}, headers=headers, timeout=10
+                    ),
+                    f"删除无效账号 {name}",
                 )
                 if 200 <= dr.status_code < 300:
                     deleted += 1
