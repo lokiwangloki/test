@@ -761,9 +761,11 @@ def _save_codex_tokens(email: str, tokens: dict):
 
 
 def _upload_token_json(filepath):
+    upload_url = (_cpa_normalize_api_root(UPLOAD_API_URL) + "/auth-files") if UPLOAD_API_URL else ""
+
     def _sanitize_cpa_error_message(error: Exception) -> str:
         message = str(error)
-        raw_url = str(UPLOAD_API_URL or "").strip()
+        raw_url = str(upload_url or UPLOAD_API_URL or "").strip()
         if not raw_url:
             return message
         parsed = urlparse(raw_url)
@@ -812,7 +814,7 @@ def _upload_token_json(filepath):
                 session.proxies = {"http": proxy, "https": proxy}
 
             resp = session.post(
-                UPLOAD_API_URL,
+                upload_url,
                 multipart=mp,
                 headers={"Authorization": f"Bearer {UPLOAD_API_TOKEN}"},
                 verify=False,

@@ -11,6 +11,7 @@ fake_curl_cffi.requests = types.SimpleNamespace()
 sys.modules.setdefault("curl_cffi", fake_curl_cffi)
 
 import ncs_register
+import ncs_register_legacy
 from ncs_runtime import email_services, engine as runtime_engine
 
 
@@ -87,6 +88,16 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(
             stdin_input,
             "\nn\nregistered_accounts.txt\n200\n3\nn\n3\n",
+        )
+
+    def test_cpa_root_url_normalizes_to_management_auth_files(self):
+        self.assertEqual(
+            auto_scheduler._cpa_auth_files_url("http://example.com:8317"),
+            "http://example.com:8317/v0/management/auth-files",
+        )
+        self.assertEqual(
+            ncs_register_legacy._cpa_normalize_api_root("http://example.com:8317"),
+            "http://example.com:8317/v0/management",
         )
 
     def test_auto_scheduler_main_runs_once_without_sleep(self):
