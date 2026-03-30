@@ -18,7 +18,7 @@ from config_env import env_override
 # ================= 配置 =================
 
 CHECK_INTERVAL_SECONDS = 3600       # 检查间隔：1小时
-ACCOUNT_THRESHOLD = 500             # 有效账号数量阈值
+ACCOUNT_THRESHOLD = 2500            # 有效账号数量阈值
 REGISTER_SCRIPT = "ncs_register.py" # 注册脚本文件名
 
 # 注册参数（对应 ncs_register.py 的 main() 交互）
@@ -27,7 +27,7 @@ AUTO_PARAMS = {
     "preflight": "n",                   # 是否执行启动前预检: "y" 或 "n"（调度建议 n，避免交互阻塞）
     "cpa_cleanup": "n",                 # 注册前是否清理 CPA 无效号: "y" 或 "n"
                                         # （调度器自己已经做了探测+删除，建议设 "n" 避免重复）
-    "total_accounts": 500,              # 每次注册数量（实际会取 max(此值, 缺口数)）
+    "total_accounts": 2500,             # 每次注册数量（实际会取 max(此值, 缺口数)）
     "max_workers": 3,                   # 并发数
     "cpa_upload_every_n": 3,            # 每成功 N 个账号触发一次 CPA 上传
 }

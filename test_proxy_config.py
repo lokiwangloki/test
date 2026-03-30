@@ -90,9 +90,9 @@ class ProxyNormalizationTests(unittest.TestCase):
             "\nn\nregistered_accounts.txt\n500\n3\nn\n3\n",
         )
 
-    def test_auto_scheduler_defaults_target_500_accounts(self):
-        self.assertEqual(auto_scheduler.ACCOUNT_THRESHOLD, 500)
-        self.assertEqual(auto_scheduler.AUTO_PARAMS["total_accounts"], 500)
+    def test_auto_scheduler_defaults_target_2500_accounts(self):
+        self.assertEqual(auto_scheduler.ACCOUNT_THRESHOLD, 2500)
+        self.assertEqual(auto_scheduler.AUTO_PARAMS["total_accounts"], 2500)
 
     def test_cpa_root_url_normalizes_to_management_auth_files(self):
         self.assertEqual(
@@ -107,8 +107,9 @@ class ProxyNormalizationTests(unittest.TestCase):
     def test_auto_scheduler_main_runs_once_without_sleep(self):
         with mock.patch("auto_scheduler._load_account_count_config", return_value={}):
             with mock.patch("auto_scheduler.count_valid_accounts_local", return_value=999):
-                with mock.patch("auto_scheduler.time.sleep") as sleep_mock:
-                    auto_scheduler.main()
+                with mock.patch("auto_scheduler.trigger_registration", return_value=None):
+                    with mock.patch("auto_scheduler.time.sleep") as sleep_mock:
+                        auto_scheduler.main()
 
         sleep_mock.assert_not_called()
 

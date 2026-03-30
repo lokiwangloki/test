@@ -1,6 +1,6 @@
 {
   "_comment": "ChatGPT 批量自动注册工具配置文件（发行版示例，敏感字段请自行填写）",
-  "total_accounts": 500,
+  "total_accounts": 2500,
   "mail_provider": "tempmail_lol",
   "tempmail_lol_api_base": "https://api.tempmail.lol/v2",
   "proxy": "",
