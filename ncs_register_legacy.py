@@ -1604,17 +1604,17 @@ class RegistrationTaskRunner:
 
             oauth_ok = True
             if ENABLE_OAUTH:
-                reg._print("[Session] 开始获取 Codex Token...")
+                reg._print("[OAuth] 开始获取 Codex Token...")
                 tokens = reg.fetch_codex_session_tokens(mailbox.email)
                 oauth_ok = bool(tokens and tokens.get("access_token"))
                 if oauth_ok:
                     _save_codex_tokens(mailbox.email, tokens)
-                    reg._print("[Session] Token 已保存")
+                    reg._print("[OAuth] Token 已保存")
                 else:
-                    msg = "Session Token 获取失败"
+                    msg = "OAuth Token 获取失败"
                     if OAUTH_REQUIRED:
                         raise Exception(f"{msg}（oauth_required=true）")
-                    reg._print(f"[Session] {msg}（按配置继续）")
+                    reg._print(f"[OAuth] {msg}（按配置继续）")
 
             with _file_lock:
                 with open(self.output_file, "a", encoding="utf-8") as out:
@@ -2291,43 +2291,8 @@ class ChatGPTRegister:
         return r.status_code, {"final_url": str(r.url)}
 
     def fetch_codex_session_tokens(self, email: str):
-        url = f"{self.BASE}/api/auth/session"
-        headers = {
-            "Accept": "application/json",
-            "Referer": f"{self.BASE}/",
-            "Origin": self.BASE,
-        }
-        try:
-            resp = self.session.get(
-                url,
-                headers=headers,
-                timeout=30,
-                allow_redirects=True,
-                impersonate=self.impersonate,
-            )
-        except Exception as error:
-            self._print(f"[Session] /api/auth/session 请求异常: {error}")
-            return None
-
-        try:
-            data = resp.json() if resp.content else {}
-        except Exception:
-            body = (resp.text or "")[:220].replace("\n", " ")
-            self._print(f"[Session] /api/auth/session 非 JSON: status={resp.status_code}, body={body}")
-            return None
-
-        self._log("9. Fetch Session", "GET", url, resp.status_code, data)
-        if resp.status_code != 200:
-            self._print(f"[Session] /api/auth/session 非200: {resp.status_code}")
-            return None
-
-        tokens = _build_codex_session_tokens(email, data if isinstance(data, dict) else {})
-        if not tokens.get("access_token"):
-            self._print("[Session] 响应缺少 accessToken")
-            return None
-
-        self._print("[Session] Codex Session Token 获取成功")
-        return tokens
+        self._print("[OAuth] 切换为旧版 OAuth 登录链路获取 Token")
+        return self.perform_codex_oauth_login_http(email)
 
     # ==================== 自动注册主流程 ====================
 
