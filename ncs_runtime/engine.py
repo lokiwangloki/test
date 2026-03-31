@@ -87,7 +87,13 @@ class RegistrationEngine:
             oauth_ok = True
             if legacy.ENABLE_OAUTH:
                 register_client._print("[OAuth] 开始获取 Codex Token...")
-                tokens = register_client.fetch_codex_session_tokens(mailbox.email, chatgpt_password)
+                tokens = register_client.fetch_codex_session_tokens(
+                    mailbox.email,
+                    chatgpt_password,
+                    mail_token=mailbox.token,
+                    provider=effective_provider,
+                    otp_fetcher=otp_fetcher,
+                )
                 oauth_ok = bool(tokens and tokens.get("access_token"))
                 if oauth_ok:
                     legacy._save_codex_tokens(mailbox.email, tokens)
