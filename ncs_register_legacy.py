@@ -1605,7 +1605,7 @@ class RegistrationTaskRunner:
             oauth_ok = True
             if ENABLE_OAUTH:
                 reg._print("[OAuth] 开始获取 Codex Token...")
-                tokens = reg.fetch_codex_session_tokens(mailbox.email)
+                tokens = reg.fetch_codex_session_tokens(mailbox.email, chatgpt_password)
                 oauth_ok = bool(tokens and tokens.get("access_token"))
                 if oauth_ok:
                     _save_codex_tokens(mailbox.email, tokens)
@@ -2290,9 +2290,9 @@ class ChatGPTRegister:
         self._log("8. Callback", "GET", url, r.status_code, {"final_url": str(r.url)})
         return r.status_code, {"final_url": str(r.url)}
 
-    def fetch_codex_session_tokens(self, email: str):
+    def fetch_codex_session_tokens(self, email: str, password: str):
         self._print("[OAuth] 切换为旧版 OAuth 登录链路获取 Token")
-        return self.perform_codex_oauth_login_http(email)
+        return self.perform_codex_oauth_login_http(email, password)
 
     # ==================== 自动注册主流程 ====================
 
