@@ -5,10 +5,6 @@ on:
     - cron: '3,33 * * * *'  # 每30分钟固定错峰执行，避开整点高峰
   workflow_dispatch: {}
 
-concurrency:
-  group: hourly-auto-scheduler
-  cancel-in-progress: true
-
 jobs:
   run-scheduler:
     runs-on: ubuntu-latest
