@@ -176,6 +176,38 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(provider, "lamail")
         self.assertEqual(mailbox.email, "fallback@example.com")
 
+    def test_registration_engine_uses_v2_runtime_flow(self):
+        mailbox_service = mock.Mock()
+        mailbox_service.create_mailbox.return_value = ncs_register.MailboxSession(
+            email="user@example.com",
+            password="",
+            token="mail-token",
+            provider="tempmail_lol",
+        )
+        mailbox_service.wait_for_verification_code = mock.Mock(return_value="123456")
+
+        with mock.patch.object(runtime_engine, "build_mailbox_service", return_value=mailbox_service):
+            with mock.patch("ncs_register_legacy.ChatGPTRegister") as register_cls:
+                register_client = mock.Mock()
+                register_cls.return_value = register_client
+                with mock.patch.object(runtime_engine, "run_registration_v2", return_value=(True, {
+                    "raw_session": {"accessToken": "token-xyz"},
+                    "access_token": "token-xyz",
+                    "session_token": "sess-1",
+                    "account_id": "acct-1",
+                    "workspace_id": "acct-1",
+                })) as run_v2_mock:
+                    with mock.patch("ncs_register_legacy._save_codex_tokens") as save_tokens_mock:
+                        engine = runtime_engine.RegistrationEngine(idx=1, total=1, proxy=None, output_file="out.txt")
+                        with mock.patch.object(engine, "_append_result"):
+                            result = engine.run()
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.email, "user@example.com")
+        self.assertTrue(result.oauth_ok)
+        run_v2_mock.assert_called_once()
+        save_tokens_mock.assert_called_once()
+
     def test_load_config_supports_batch_runtime_defaults(self):
         fake_config = {
             "batch_mode": "pipeline",
