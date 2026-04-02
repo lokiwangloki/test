@@ -124,7 +124,7 @@ class ProxyNormalizationTests(unittest.TestCase):
     def test_run_once_registers_only_missing_gap(self):
         cfg = {"upload_api_url": "", "upload_api_token": ""}
         with mock.patch("auto_scheduler._load_account_count_config", return_value=cfg):
-            with mock.patch("auto_scheduler.count_valid_accounts_local", return_value=999):
+            with mock.patch("auto_scheduler.count_valid_accounts_local", side_effect=[999, 1000]):
                 with mock.patch("auto_scheduler.trigger_registration", return_value=True) as trigger_mock:
                     result = auto_scheduler.run_once()
 
@@ -140,6 +140,24 @@ class ProxyNormalizationTests(unittest.TestCase):
                 with mock.patch("auto_scheduler.trigger_registration", return_value=False):
                     self.assertFalse(auto_scheduler.run_once())
 
+    def test_run_once_returns_false_when_post_registration_recount_stays_below_threshold(self):
+        cfg = {"upload_api_url": "", "upload_api_token": ""}
+        with mock.patch("auto_scheduler._load_account_count_config", side_effect=[cfg, cfg]):
+            with mock.patch("auto_scheduler.count_valid_accounts_local", side_effect=[999, 999]) as count_mock:
+                with mock.patch("auto_scheduler.trigger_registration", return_value=True):
+                    self.assertFalse(auto_scheduler.run_once())
+
+        self.assertEqual(count_mock.call_count, 2)
+
+    def test_run_once_returns_true_when_post_registration_recount_reaches_threshold(self):
+        cfg = {"upload_api_url": "", "upload_api_token": ""}
+        with mock.patch("auto_scheduler._load_account_count_config", side_effect=[cfg, cfg]):
+            with mock.patch("auto_scheduler.count_valid_accounts_local", side_effect=[999, 1000]) as count_mock:
+                with mock.patch("auto_scheduler.trigger_registration", return_value=True):
+                    self.assertTrue(auto_scheduler.run_once())
+
+        self.assertEqual(count_mock.call_count, 2)
+
     def test_cpa_root_url_normalizes_to_management_auth_files(self):
         self.assertEqual(
             auto_scheduler._cpa_auth_files_url("http://example.com:8317"),
@@ -152,7 +170,7 @@ class ProxyNormalizationTests(unittest.TestCase):
 
     def test_auto_scheduler_main_runs_once_without_sleep(self):
         with mock.patch("auto_scheduler._load_account_count_config", return_value={}):
-            with mock.patch("auto_scheduler.count_valid_accounts_local", return_value=999):
+            with mock.patch("auto_scheduler.count_valid_accounts_local", side_effect=[999, 1000]):
                 with mock.patch("auto_scheduler.trigger_registration", return_value=True):
                     with mock.patch("auto_scheduler.time.sleep") as sleep_mock:
                         auto_scheduler.main()

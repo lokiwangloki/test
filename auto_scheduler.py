@@ -411,6 +411,13 @@ def trigger_registration(params: dict, cfg: dict) -> bool:
         return False
 
 
+def _count_valid_accounts(cfg: dict) -> int:
+    use_cpa = bool(cfg.get("upload_api_url") and cfg.get("upload_api_token"))
+    if use_cpa:
+        return count_valid_accounts_by_probe(cfg)
+    return count_valid_accounts_local(cfg)
+
+
 def run_once():
     cfg = _load_account_count_config()
     use_cpa = bool(cfg.get("upload_api_url") and cfg.get("upload_api_token"))
@@ -419,10 +426,7 @@ def run_once():
     print(f"[{now_str}] 开始检测有效账号数量...")
 
     try:
-        if use_cpa:
-            count = count_valid_accounts_by_probe(cfg)
-        else:
-            count = count_valid_accounts_local(cfg)
+        count = _count_valid_accounts(cfg)
     except Exception as e:
         print(f"[检测] 统计异常: {e}，本次跳过（保守不触发注册）")
         count = ACCOUNT_THRESHOLD
@@ -438,9 +442,22 @@ def run_once():
         if not success:
             print("[调度] 注册执行失败，本轮以失败结束")
             return False
-        # 注册完成后重新加载配置
+
+        # 注册完成后重新加载配置并复检数量，避免“注册过程退出 0 但实际没补到阈值”的假成功。
         cfg = _load_account_count_config()
         use_cpa = bool(cfg.get("upload_api_url") and cfg.get("upload_api_token"))
+        try:
+            recount = _count_valid_accounts(cfg)
+        except Exception as e:
+            print(f"[调度] 注册后复检异常: {e}，本轮以失败结束")
+            return False
+
+        print(f"[调度] 注册后复检有效账号: {recount} 个 (阈值: {ACCOUNT_THRESHOLD})")
+        if recount < ACCOUNT_THRESHOLD:
+            print(f"[调度] 注册后仍低于阈值 ({recount}/{ACCOUNT_THRESHOLD})，本轮以失败结束")
+            return False
+
+        print(f"[调度] 注册后已恢复到阈值以上 ({recount}/{ACCOUNT_THRESHOLD})")
     else:
         print(f"[检测] ✅ 账号数量充足，无需注册")
 
