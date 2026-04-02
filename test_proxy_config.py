@@ -276,6 +276,17 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(mailbox.provider, "cfmail")
         register_client.create_cfmail_email.assert_called_once()
 
+    def test_cfmail_env_account_values_are_normalized_like_local_project(self):
+        with mock.patch.object(ncs_register_legacy, "CFMAIL_WORKER_DOMAIN", "https://tmpemail.lokiw.dpdns.org/"):
+            with mock.patch.object(ncs_register_legacy, "CFMAIL_EMAIL_DOMAIN", "https://wocaoniubi.lokiw.dpdns.org/"):
+                with mock.patch.object(ncs_register_legacy, "CFMAIL_ADMIN_PASSWORD", "secret"):
+                    with mock.patch.object(ncs_register_legacy, "CFMAIL_PROFILE_NAME", "default"):
+                        accounts = ncs_register_legacy._build_cfmail_accounts([])
+
+        self.assertEqual(len(accounts), 1)
+        self.assertEqual(accounts[0].worker_domain, "tmpemail.lokiw.dpdns.org")
+        self.assertEqual(accounts[0].email_domain, "wocaoniubi.lokiw.dpdns.org")
+
     def test_wildmail_service_creates_mailbox_via_register_client(self):
         register_client = mock.Mock()
         register_client.create_wildmail_email.return_value = ("wild@example.com", "", "wild-token")

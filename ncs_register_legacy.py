@@ -343,8 +343,8 @@ def _build_cfmail_accounts(raw_accounts: list) -> list:
         seen_names.add(key)
         accounts.append(account)
 
-    env_worker_domain = CFMAIL_WORKER_DOMAIN or _normalize_host(os.getenv("CFMAIL_WORKER_DOMAIN", ""))
-    env_email_domain = CFMAIL_EMAIL_DOMAIN or _normalize_host(os.getenv("CFMAIL_EMAIL_DOMAIN", ""))
+    env_worker_domain = _normalize_host(CFMAIL_WORKER_DOMAIN) or _normalize_host(os.getenv("CFMAIL_WORKER_DOMAIN", ""))
+    env_email_domain = _normalize_host(CFMAIL_EMAIL_DOMAIN) or _normalize_host(os.getenv("CFMAIL_EMAIL_DOMAIN", ""))
     env_admin_password = CFMAIL_ADMIN_PASSWORD or str(os.getenv("CFMAIL_ADMIN_PASSWORD", "")).strip()
     env_profile_name = CFMAIL_PROFILE_NAME or str(os.getenv("CFMAIL_PROFILE_NAME", "default")).strip() or "default"
 
