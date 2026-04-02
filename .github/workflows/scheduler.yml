@@ -48,12 +48,13 @@ jobs:
           PY
 
       - name: Diagnose Wildmail
+        continue-on-error: true
         env:
           WILDMAIL_API_BASE: ${{ secrets.WILDMAIL_API_BASE }}
           WILDMAIL_API_KEY: ${{ secrets.WILDMAIL_API_KEY }}
         run: |
           if [ -n "${WILDMAIL_API_BASE}" ] && [ -n "${WILDMAIL_API_KEY}" ]; then
-            python -u scripts/diagnose_wildmail.py
+            python -u scripts/diagnose_wildmail.py || echo "Wildmail diagnose failed, continue because cfmail is primary"
           else
             echo "WILDMAIL secrets not configured, skip diagnose"
           fi

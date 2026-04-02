@@ -215,6 +215,11 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIn("PROXY", workflow)
         self.assertIn("UPLOAD_API_PROXY", workflow)
 
+    def test_scheduler_workflow_does_not_block_cfmail_on_wildmail_diagnose(self):
+        workflow = Path(".github/workflows/scheduler.yml").read_text(encoding="utf-8")
+        self.assertIn("Diagnose Wildmail", workflow)
+        self.assertIn("continue-on-error: true", workflow)
+
     def test_mailbox_service_factory_supports_cfmail_lamail_tempmail_and_wildmail(self):
         fake_register = object()
         self.assertIsInstance(
