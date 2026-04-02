@@ -61,12 +61,15 @@ jobs:
       - name: Run auto_scheduler
         env:
           PYTHONUNBUFFERED: 1
+          MAIL_PROVIDER: wildmail
           LAMAIL_DOMAIN: ${{ secrets.LAMAIL_DOMAIN }}
           LAMAIL_API_KEY: ${{ secrets.LAMAIL_API_KEY }}
           WILDMAIL_API_BASE: ${{ secrets.WILDMAIL_API_BASE }}
           WILDMAIL_API_KEY: ${{ secrets.WILDMAIL_API_KEY }}
           UPLOAD_API_URL: ${{ secrets.UPLOAD_API_URL }}
           UPLOAD_API_TOKEN: ${{ secrets.UPLOAD_API_TOKEN }}
+          PROXY: ${{ secrets.PROXY }}
+          UPLOAD_API_PROXY: ${{ secrets.UPLOAD_API_PROXY }}
         run: |
           # 如果系统有 `uv` 命令则使用用户期望的命令，否则降级执行 python
           if command -v uv >/dev/null 2>&1; then

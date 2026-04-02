@@ -478,6 +478,36 @@ def _wildmail_headers(*, api_key: str = "") -> Dict[str, str]:
     return headers
 
 
+def _wildmail_domain_has_public_mx(domain: str, *, proxy: str = "", impersonate: str = "chrome") -> bool:
+    target = str(domain or "").strip().lower()
+    if not target:
+        return False
+
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    try:
+        resp = curl_requests.get(
+            "https://dns.google/resolve",
+            params={"name": target, "type": "MX"},
+            headers={"Accept": "application/json"},
+            proxies=proxies,
+            impersonate=impersonate,
+            timeout=15,
+        )
+    except Exception:
+        return False
+
+    if resp.status_code != 200:
+        return False
+
+    try:
+        payload = resp.json()
+    except Exception:
+        return False
+
+    answers = payload.get("Answer", []) if isinstance(payload, dict) else []
+    return any(int(item.get("type") or 0) == 15 for item in answers if isinstance(item, dict))
+
+
 def _lamail_headers(*, bearer: str = "", use_json: bool = False, api_key: str = "") -> Dict[str, str]:
     headers = {"Accept": "application/json"}
     if use_json:
@@ -2169,6 +2199,10 @@ class ChatGPTRegister:
         token = str(data.get("token") or "").strip()
         if not email or not token:
             raise Exception("wildmail 返回数据不完整（address 或 token 为空）")
+
+        domain = email.split("@", 1)[1].strip().lower() if "@" in email else ""
+        if not _wildmail_domain_has_public_mx(domain, proxy=self.proxy or "", impersonate=self.impersonate):
+            raise Exception(f"wildmail 域名未配置 MX: {domain or '<unknown>'}")
 
         self._wildmail_api_base = api_base
         self._print(f"[wildmail] 创建邮箱成功: {email}")

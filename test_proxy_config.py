@@ -211,6 +211,9 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIn("Diagnose CPA DNS", workflow)
         self.assertIn("LAMAIL_DOMAIN", workflow)
         self.assertIn("LAMAIL_API_KEY", workflow)
+        self.assertIn("MAIL_PROVIDER", workflow)
+        self.assertIn("PROXY", workflow)
+        self.assertIn("UPLOAD_API_PROXY", workflow)
 
     def test_mailbox_service_factory_supports_lamail_tempmail_and_wildmail(self):
         fake_register = object()
@@ -265,35 +268,106 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(mailbox.provider, "wildmail")
         register_client.create_wildmail_email.assert_called_once()
 
-    def test_tempmail_rate_limit_falls_back_to_lamail(self):
+    def test_wildmail_domain_has_public_mx_uses_dns_over_https(self):
+        class FakeResponse:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {
+                    "Answer": [
+                        {"type": 15, "data": "10 route1.mx.cloudflare.net."},
+                    ]
+                }
+
+        with mock.patch("ncs_register_legacy.curl_requests.get", return_value=FakeResponse(), create=True):
+            self.assertTrue(ncs_register_legacy._wildmail_domain_has_public_mx("job123.loki.us.ci"))
+
+    def test_create_wildmail_email_rejects_domain_without_public_mx(self):
+        register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)
+        register.proxy = None
+        register.impersonate = "chrome"
+        register._wildmail_api_base = ""
+        register._print = mock.Mock()
+
+        class FakeResponse:
+            status_code = 200
+            content = b'{"address":"diag@job123.loki.us.ci","token":"token-1"}'
+            text = '{"address":"diag@job123.loki.us.ci","token":"token-1"}'
+
+            @staticmethod
+            def json():
+                return {"address": "diag@job123.loki.us.ci", "token": "token-1"}
+
+        with mock.patch.object(ncs_register_legacy, "WILDMAIL_API_BASE", "https://wildmail.example.com"):
+            with mock.patch.object(ncs_register_legacy, "WILDMAIL_API_KEY", "secret"):
+                with mock.patch("ncs_register_legacy.curl_requests.post", return_value=FakeResponse(), create=True):
+                    with mock.patch("ncs_register_legacy._wildmail_domain_has_public_mx", return_value=False):
+                        with self.assertRaisesRegex(Exception, "wildmail 域名未配置 MX"):
+                            register.create_wildmail_email()
+
+    def test_provider_candidates_prefer_wildmail_then_lamail_then_tempmail(self):
+        with mock.patch.object(ncs_register_legacy, "WILDMAIL_API_BASE", "https://wildmail.example.com"):
+            self.assertEqual(
+                email_services.get_provider_candidates("wildmail"),
+                ["wildmail", "lamail", "tempmail_lol"],
+            )
+
+    def test_wildmail_falls_back_to_lamail_before_tempmail(self):
         register_client = mock.Mock()
-        register_client.create_tempmail_lol_email.side_effect = Exception(
-            'TempMail.lol 创建失败: 429 - {"error":"Rate limited (free)"}'
-        )
+        register_client.create_wildmail_email.side_effect = Exception("wildmail 域名未配置 MX")
         register_client.create_lamail_email.return_value = ("fallback@example.com", "", "token-1")
         register_client._print = mock.Mock()
 
-        engine = runtime_engine.RegistrationEngine(idx=1, total=1, proxy=None, output_file="out.txt")
-        service, mailbox, provider = engine._create_mailbox_with_fallback(register_client, "tempmail_lol")
+        with mock.patch.object(ncs_register_legacy, "WILDMAIL_API_BASE", "https://wildmail.example.com"):
+            engine = runtime_engine.RegistrationEngine(idx=1, total=1, proxy=None, output_file="out.txt")
+            service, mailbox, provider = engine._create_mailbox_with_fallback(register_client, "wildmail")
 
         self.assertIsInstance(service, email_services.LaMailMailboxService)
         self.assertEqual(provider, "lamail")
         self.assertEqual(mailbox.email, "fallback@example.com")
 
-    def test_tempmail_http_429_without_rate_limit_phrase_still_falls_back(self):
+    def test_wildmail_falls_back_to_tempmail_after_lamail_failure(self):
         register_client = mock.Mock()
-        register_client.create_tempmail_lol_email.side_effect = Exception(
-            "TempMail.lol 创建失败: HTTP 429 Too Many Requests"
-        )
-        register_client.create_lamail_email.return_value = ("fallback2@example.com", "", "token-2")
+        register_client.create_wildmail_email.side_effect = Exception("wildmail 域名未配置 MX")
+        register_client.create_lamail_email.side_effect = Exception("lamail 创建失败")
+        register_client.create_tempmail_lol_email.return_value = ("fallback2@example.com", "", "token-2")
+        register_client._print = mock.Mock()
+
+        with mock.patch.object(ncs_register_legacy, "WILDMAIL_API_BASE", "https://wildmail.example.com"):
+            engine = runtime_engine.RegistrationEngine(idx=1, total=1, proxy=None, output_file="out.txt")
+            service, mailbox, provider = engine._create_mailbox_with_fallback(register_client, "wildmail")
+
+        self.assertIsInstance(service, email_services.TempmailLolMailboxService)
+        self.assertEqual(provider, "tempmail_lol")
+        self.assertEqual(mailbox.email, "fallback2@example.com")
+
+    def test_lamail_primary_falls_back_to_tempmail(self):
+        register_client = mock.Mock()
+        register_client.create_lamail_email.side_effect = Exception("lamail 创建失败")
+        register_client.create_tempmail_lol_email.return_value = ("fallback3@example.com", "", "token-3")
         register_client._print = mock.Mock()
 
         engine = runtime_engine.RegistrationEngine(idx=1, total=1, proxy=None, output_file="out.txt")
-        service, mailbox, provider = engine._create_mailbox_with_fallback(register_client, "tempmail_lol")
+        service, mailbox, provider = engine._create_mailbox_with_fallback(register_client, "lamail")
+
+        self.assertIsInstance(service, email_services.TempmailLolMailboxService)
+        self.assertEqual(provider, "tempmail_lol")
+        self.assertEqual(mailbox.email, "fallback3@example.com")
+
+    def test_wildmail_primary_falls_back_to_lamail_then_tempmail(self):
+        register_client = mock.Mock()
+        register_client.create_wildmail_email.side_effect = Exception("wildmail 域名未配置 MX")
+        register_client.create_lamail_email.return_value = ("fallback4@example.com", "", "token-4")
+        register_client._print = mock.Mock()
+
+        with mock.patch.object(ncs_register_legacy, "WILDMAIL_API_BASE", "https://wildmail.example.com"):
+            engine = runtime_engine.RegistrationEngine(idx=1, total=1, proxy=None, output_file="out.txt")
+            service, mailbox, provider = engine._create_mailbox_with_fallback(register_client, "wildmail")
 
         self.assertIsInstance(service, email_services.LaMailMailboxService)
         self.assertEqual(provider, "lamail")
-        self.assertEqual(mailbox.email, "fallback2@example.com")
+        self.assertEqual(mailbox.email, "fallback4@example.com")
 
     def test_registration_engine_uses_legacy_oauth_flow(self):
         mailbox_service = mock.Mock()

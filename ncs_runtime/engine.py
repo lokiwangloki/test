@@ -3,7 +3,7 @@ from typing import Optional
 
 import ncs_register_legacy as legacy
 
-from .email_services import LaMailMailboxService, build_mailbox_service, should_fallback_to_lamail
+from .email_services import build_mailbox_service, get_provider_candidates
 from .v2_flow import run_registration_v2
 
 
@@ -38,18 +38,26 @@ class RegistrationEngine:
                 out.write(line)
 
     def _create_mailbox_with_fallback(self, register_client, provider: str):
-        mailbox_service = build_mailbox_service(register_client, provider)
-        register_client._print(f"[{provider}] 初始化邮箱服务...")
-        try:
-            mailbox = mailbox_service.create_mailbox()
-            return mailbox_service, mailbox, provider
-        except Exception as error:
-            if provider == "tempmail_lol" and should_fallback_to_lamail(error):
-                register_client._print("[tempmail_lol] 命中 429 限流，自动切换到 lamail...")
-                fallback_service = LaMailMailboxService(register_client)
-                mailbox = fallback_service.create_mailbox()
-                return fallback_service, mailbox, "lamail"
-            raise
+        candidates = get_provider_candidates(provider)
+        last_error = None
+
+        for index, candidate in enumerate(candidates):
+            mailbox_service = build_mailbox_service(register_client, candidate)
+            register_client._print(f"[{candidate}] 初始化邮箱服务...")
+            try:
+                mailbox = mailbox_service.create_mailbox()
+                return mailbox_service, mailbox, candidate
+            except Exception as error:
+                last_error = error
+                if index >= len(candidates) - 1:
+                    raise
+                next_provider = candidates[index + 1]
+                register_client._print(f"[{candidate}] 创建邮箱失败: {error}")
+                register_client._print(f"[fallback] 切换到 {next_provider}...")
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("未找到可用邮箱服务")
 
     def run(self) -> RegistrationResult:
         provider = legacy.MAIL_PROVIDER

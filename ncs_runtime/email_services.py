@@ -73,6 +73,45 @@ def should_fallback_to_lamail(error: Exception) -> bool:
     return any(marker in text for marker in ("rate limit", "too many requests", "rate limited"))
 
 
+def _split_provider_chain(raw: str) -> list[str]:
+    return [
+        item.strip().lower()
+        for item in str(raw or "").split(",")
+        if item.strip()
+    ]
+
+
+def _provider_is_configured(provider: str) -> bool:
+    normalized = str(provider or "").strip().lower()
+    if normalized == "wildmail":
+        return bool(str(getattr(legacy, "WILDMAIL_API_BASE", "") or "").strip())
+    return normalized in {"tempmail_lol", "lamail"}
+
+
+def get_provider_candidates(provider: str) -> list[str]:
+    normalized = str(provider or "").strip().lower()
+    configured_chain = _split_provider_chain(getattr(legacy, "MAIL_PROVIDER_CHAIN", ""))
+    if configured_chain:
+        raw_candidates = configured_chain
+    elif normalized == "wildmail":
+        raw_candidates = ["wildmail", "lamail", "tempmail_lol"]
+    elif normalized == "lamail":
+        raw_candidates = ["lamail", "tempmail_lol"]
+    elif normalized == "tempmail_lol":
+        raw_candidates = ["tempmail_lol"]
+    else:
+        raw_candidates = [normalized]
+
+    candidates: list[str] = []
+    for item in raw_candidates:
+        if item in {"tempmail_lol", "lamail", "wildmail"} and item not in candidates and _provider_is_configured(item):
+            candidates.append(item)
+
+    if not candidates:
+        return [normalized]
+    return candidates
+
+
 def build_mailbox_service(register_client: "legacy.ChatGPTRegister", provider: str) -> BaseMailboxService:
     normalized = str(provider or "").strip().lower()
     if normalized == "tempmail_lol":

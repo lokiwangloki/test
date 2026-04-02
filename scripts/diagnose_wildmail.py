@@ -4,6 +4,9 @@ import secrets
 import sys
 from typing import Any
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from ncs_register_legacy import _wildmail_domain_has_public_mx
 from curl_cffi import requests as curl_requests
 
 
@@ -50,6 +53,9 @@ def main() -> int:
     address = str(create_data["address"])
     token = str(create_data["token"])
     print(f"[wildmail] create=200 address={address}")
+    domain = address.split("@", 1)[1].strip().lower() if "@" in address else ""
+    has_public_mx = _wildmail_domain_has_public_mx(domain)
+    print(f"[wildmail] public_mx={'yes' if has_public_mx else 'no'} domain={domain or '<unknown>'}")
 
     webhook_resp = session.post(
         f"{base}/open_api/wildmail/webhooks/mailgun",
