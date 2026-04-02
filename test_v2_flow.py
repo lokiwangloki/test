@@ -1,6 +1,7 @@
 import unittest
 import sys
 import types
+from pathlib import Path
 
 
 fake_curl_cffi = types.ModuleType("curl_cffi")
@@ -9,6 +10,13 @@ sys.modules.setdefault("curl_cffi", fake_curl_cffi)
 
 
 class V2FlowTests(unittest.TestCase):
+    def test_default_config_prefers_lamail_with_secret_mappings(self):
+        config = Path("config.json").read_text(encoding="utf-8")
+
+        self.assertIn('"mail_provider": "lamail"', config)
+        self.assertIn('"lamail_api_key_env": "LAMAIL_API_KEY"', config)
+        self.assertIn('"lamail_domain_env": "LAMAIL_DOMAIN"', config)
+
     def test_should_retry_registration_v2_matches_reference_markers(self):
         from ncs_runtime.v2_flow import should_retry_registration_v2
 

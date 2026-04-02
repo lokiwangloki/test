@@ -77,35 +77,34 @@ class RegistrationEngine:
             otp_fetcher = mailbox_service.wait_for_verification_code
 
             oauth_ok = True
-            register_client._print("[V2] 开始执行参考项目状态机注册流程...")
-            first_name, last_name = (name.split(" ", 1) + [""])[:2]
-            ok, session_or_error = run_registration_v2(
-                email=mailbox.email,
-                password=chatgpt_password,
-                first_name=first_name,
-                last_name=last_name or "Smith",
-                birthdate=birthdate,
+            register_client._print("[Legacy] 开始执行本地同款注册流程...")
+            register_client.run_register(
+                mailbox.email,
+                chatgpt_password,
+                name,
+                birthdate,
+                mailbox.token,
+                provider=effective_provider,
                 otp_fetcher=otp_fetcher,
-                proxy_url=self.proxy,
-                logger=register_client._print,
             )
-            if not ok:
-                raise Exception(session_or_error)
-
-            raw_session = session_or_error.get("raw_session") or {
-                "accessToken": session_or_error.get("access_token", ""),
-            }
-            tokens = legacy._build_codex_session_tokens(mailbox.email, raw_session)
             if legacy.ENABLE_OAUTH:
+                register_client._print("[OAuth] 开始获取 Codex Token...")
+                tokens = register_client.fetch_codex_session_tokens(
+                    mailbox.email,
+                    chatgpt_password,
+                    mail_token=mailbox.token,
+                    provider=effective_provider,
+                    otp_fetcher=otp_fetcher,
+                )
                 oauth_ok = bool(tokens and tokens.get("access_token"))
                 if oauth_ok:
                     legacy._save_codex_tokens(mailbox.email, tokens)
-                    register_client._print("[V2] Token 已保存")
+                    register_client._print("[OAuth] Token 已保存")
                 else:
-                    message = "V2 会话令牌转换失败"
+                    message = "OAuth Token 获取失败"
                     if legacy.OAUTH_REQUIRED:
                         raise Exception(f"{message}（oauth_required=true）")
-                    register_client._print(f"[V2] {message}（按配置继续）")
+                    register_client._print(f"[OAuth] {message}（按配置继续）")
 
             self._append_result(mailbox, chatgpt_password, oauth_ok)
 
