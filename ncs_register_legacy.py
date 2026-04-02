@@ -2532,13 +2532,47 @@ class ChatGPTRegister:
         otp_fetcher: Optional[Callable[[int], Optional[str]]] = None,
     ):
         self._print("[OAuth] 切换为旧版 OAuth 登录链路获取 Token")
-        return self.perform_codex_oauth_login_http(
+        tokens = self.perform_codex_oauth_login_http(
             email,
             password,
             mail_token=mail_token,
             provider=provider,
             otp_fetcher=otp_fetcher,
         )
+        if tokens and tokens.get("access_token"):
+            return tokens
+        self._print("[OAuth] 纯协议链路未拿到 Token，尝试复用 ChatGPT 会话...")
+        return self.fetch_chatgpt_session_tokens(email)
+
+    def fetch_chatgpt_session_tokens(self, email: str):
+        url = f"{self.BASE}/api/auth/session"
+        headers = {
+            "Accept": "application/json",
+            "Referer": f"{self.BASE}/",
+            "User-Agent": self.ua,
+        }
+        try:
+            response = self.session.get(url, headers=headers, timeout=30, impersonate=self.impersonate)
+        except Exception as e:
+            self._print(f"[OAuth] /api/auth/session 异常: {e}")
+            return None
+
+        if response.status_code != 200:
+            self._print(f"[OAuth] /api/auth/session -> HTTP {response.status_code}")
+            return None
+
+        try:
+            session_data = response.json()
+        except Exception as e:
+            self._print(f"[OAuth] /api/auth/session 返回非 JSON: {e}")
+            return None
+
+        tokens = _build_codex_session_tokens(email, session_data)
+        if not tokens:
+            self._print("[OAuth] /api/auth/session 未返回 accessToken")
+            return None
+        self._print("[OAuth] 已通过 ChatGPT 会话复用拿到 Token")
+        return tokens
 
     # ==================== 自动注册主流程 ====================
 

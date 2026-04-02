@@ -433,6 +433,24 @@ class ProxyNormalizationTests(unittest.TestCase):
         register_client.fetch_codex_session_tokens.assert_called_once()
         save_tokens_mock.assert_called_once()
 
+    def test_fetch_codex_session_tokens_falls_back_to_chatgpt_session(self):
+        register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)
+        register._print = mock.Mock()
+        register.perform_codex_oauth_login_http = mock.Mock(return_value=None)
+        register.fetch_chatgpt_session_tokens = mock.Mock(return_value={"access_token": "session-token"})
+
+        tokens = ncs_register_legacy.ChatGPTRegister.fetch_codex_session_tokens(
+            register,
+            "user@example.com",
+            "password-1",
+            mail_token="mail-token",
+            provider="cfmail",
+        )
+
+        self.assertEqual(tokens, {"access_token": "session-token"})
+        register.perform_codex_oauth_login_http.assert_called_once()
+        register.fetch_chatgpt_session_tokens.assert_called_once_with("user@example.com")
+
     def test_ncs_register_main_exits_nonzero_when_batch_fails(self):
         with mock.patch("ncs_register.MAIL_PROVIDER", "tempmail_lol"):
             with mock.patch("ncs_register.DEFAULT_PROXY", ""):
