@@ -1388,6 +1388,23 @@ def wait_for_verification_email(mail_token: str, timeout: int = 120):
     return None
 
 
+def _filter_unseen_otp_messages(register_client, key: str, messages, id_getter):
+    cache = getattr(register_client, "_otp_seen_message_ids", None)
+    if cache is None:
+        cache = {}
+        setattr(register_client, "_otp_seen_message_ids", cache)
+
+    seen_ids = cache.setdefault(key, set())
+    new_messages = []
+    for msg in messages:
+        msg_id = str(id_getter(msg) or "").strip()
+        if not msg_id or msg_id in seen_ids:
+            continue
+        seen_ids.add(msg_id)
+        new_messages.append(msg)
+    return new_messages
+
+
 def _random_name():
     first = random.choice([
         "James", "Emma", "Liam", "Olivia", "Noah", "Ava", "Ethan", "Sophia",
@@ -2088,40 +2105,39 @@ class ChatGPTRegister:
         effective_provider = provider or MAIL_PROVIDER
         self._print(f"[OTP] 等待验证码邮件 (最多 {timeout}s, provider={effective_provider})...")
         start_time = time.time()
-        seen_ids: set = set()
+        seen_key = f"{effective_provider}:{email.strip().lower()}:{str(mail_token or '').strip()}"
 
         while time.time() - start_time < timeout:
             code = None
 
             if effective_provider == "cfmail":
                 messages = self._fetch_emails_cfmail(mail_token)
-                # 过滤已见过的消息
-                new_messages = []
-                for msg in messages:
-                    msg_id = str(msg.get("id") or msg.get("createdAt") or "").strip()
-                    if msg_id and msg_id not in seen_ids:
-                        seen_ids.add(msg_id)
-                        new_messages.append(msg)
+                new_messages = _filter_unseen_otp_messages(
+                    self,
+                    seen_key,
+                    messages,
+                    lambda msg: msg.get("id") or msg.get("createdAt"),
+                )
                 if new_messages:
                     code = self._extract_cfmail_code(new_messages, email)
             elif effective_provider == "tempmail_lol":
                 messages = self._fetch_emails_tempmail_lol(mail_token)
-                new_messages = []
-                for msg in sorted(messages, key=lambda x: x.get("date", 0), reverse=True):
-                    msg_id = str(msg.get("id") or msg.get("date") or msg.get("createdAt") or "").strip()
-                    if msg_id and msg_id not in seen_ids:
-                        seen_ids.add(msg_id)
-                        new_messages.append(msg)
+                new_messages = _filter_unseen_otp_messages(
+                    self,
+                    seen_key,
+                    sorted(messages, key=lambda x: x.get("date", 0), reverse=True),
+                    lambda msg: msg.get("id") or msg.get("date") or msg.get("createdAt"),
+                )
                 if new_messages:
                     code = self._extract_tempmail_lol_code(new_messages)
             elif effective_provider == "lamail":
                 messages = self._fetch_emails_lamail(mail_token, email)
-                new_messages = []
-                for msg in reversed(messages):
-                    msg_id = str(msg.get("id") or msg.get("createdAt") or msg.get("receivedAt") or "").strip()
-                    if msg_id and msg_id not in seen_ids:
-                        seen_ids.add(msg_id)
-                        new_messages.append(msg)
+                new_messages = _filter_unseen_otp_messages(
+                    self,
+                    seen_key,
+                    reversed(messages),
+                    lambda msg: msg.get("id") or msg.get("createdAt") or msg.get("receivedAt"),
+                )
                 if new_messages:
                     code = self._extract_lamail_code(new_messages, mail_token)
             else:

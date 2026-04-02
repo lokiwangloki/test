@@ -16,6 +16,25 @@ from ncs_runtime import email_services, engine as runtime_engine
 
 
 class ProxyNormalizationTests(unittest.TestCase):
+    def test_otp_message_ids_are_not_reused_across_calls(self):
+        register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)
+
+        first = ncs_register_legacy._filter_unseen_otp_messages(
+            register,
+            key="lamail:user@example.com",
+            messages=[{"id": "msg-1", "subject": "Your ChatGPT code is 123456"}],
+            id_getter=lambda msg: str(msg.get("id") or ""),
+        )
+        second = ncs_register_legacy._filter_unseen_otp_messages(
+            register,
+            key="lamail:user@example.com",
+            messages=[{"id": "msg-1", "subject": "Your ChatGPT code is 123456"}],
+            id_getter=lambda msg: str(msg.get("id") or ""),
+        )
+
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])
+
     def test_ncs_register_default_proxy_is_disabled(self):
         self.assertEqual(ncs_register._normalize_proxy_value(""), "")
         self.assertEqual(ncs_register._normalize_proxy_value("填入您自己的代理地址"), "")
