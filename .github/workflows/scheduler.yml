@@ -52,6 +52,8 @@ jobs:
           PYTHONUNBUFFERED: 1
           LAMAIL_DOMAIN: ${{ secrets.LAMAIL_DOMAIN }}
           LAMAIL_API_KEY: ${{ secrets.LAMAIL_API_KEY }}
+          WILDMAIL_API_BASE: ${{ secrets.WILDMAIL_API_BASE }}
+          WILDMAIL_API_KEY: ${{ secrets.WILDMAIL_API_KEY }}
           UPLOAD_API_URL: ${{ secrets.UPLOAD_API_URL }}
           UPLOAD_API_TOKEN: ${{ secrets.UPLOAD_API_TOKEN }}
         run: |
