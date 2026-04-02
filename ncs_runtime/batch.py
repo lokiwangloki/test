@@ -15,9 +15,14 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
               max_workers: int = 3, proxy: str = None, cpa_cleanup=None,
               cpa_upload_every_n: int = 3):
     provider = legacy.MAIL_PROVIDER
+    if provider == "cfmail" and not legacy.CFMAIL_ACCOUNTS:
+        print("❌ 错误: mail_provider=cfmail 但未找到可用的 cfmail 配置")
+        print(f"   请检查配置文件: {legacy._CFMAIL_CONFIG_PATH}")
+        print("   或配置环境变量: CFMAIL_WORKER_DOMAIN / CFMAIL_EMAIL_DOMAIN / CFMAIL_ADMIN_PASSWORD")
+        return False
     if provider not in legacy.SUPPORTED_MAIL_PROVIDERS:
         print(f"❌ 错误: 不支持的 mail_provider={provider}")
-        print("   可选值: lamail / tempmail_lol / wildmail")
+        print("   可选值: cfmail / lamail / tempmail_lol / wildmail")
         return False
 
     actual_workers = min(max_workers, total_accounts)
@@ -26,7 +31,11 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
     print(f"  注册数量: {total_accounts} | 并发数: {actual_workers}")
     print(f"  批量模式: {legacy.BATCH_MODE}")
     print(f"  邮箱服务: {provider}")
-    if provider == "tempmail_lol":
+    if provider == "cfmail":
+        cfmail_names = ", ".join(account.name for account in legacy.CFMAIL_ACCOUNTS)
+        print(f"  cfmail 配置: {cfmail_names}")
+        print(f"  cfmail 模式: {legacy.CFMAIL_PROFILE_MODE}")
+    elif provider == "tempmail_lol":
         print(f"  TempMail.lol: {legacy.TEMPMAIL_LOL_API_BASE}")
     elif provider == "lamail":
         print(f"  LaMail: {legacy.LAMAIL_API_BASE}")

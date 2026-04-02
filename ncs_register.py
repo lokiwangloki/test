@@ -7,6 +7,7 @@ import ncs_register_legacy as legacy
 from ncs_runtime.batch import run_batch
 from ncs_runtime.email_services import (
     BaseMailboxService,
+    CfmailMailboxService,
     LaMailMailboxService,
     MailboxSession,
     TempmailLolMailboxService,
@@ -48,7 +49,15 @@ def main():
     print("=" * 60)
 
     provider = MAIL_PROVIDER
-    if provider == "tempmail_lol":
+    if provider == "cfmail":
+        if legacy.CFMAIL_ACCOUNTS:
+            cfmail_names = ", ".join(account.name for account in legacy.CFMAIL_ACCOUNTS)
+            print(f"\n[Info] cfmail 配置已加载: {cfmail_names}")
+            print(f"[Info] cfmail 模式: {legacy.CFMAIL_PROFILE_MODE}")
+        else:
+            print(f"\n[Warn] mail_provider=cfmail 但未找到可用配置: {legacy._CFMAIL_CONFIG_PATH}")
+            print("[Warn] 也可以通过环境变量注入 CFMAIL_WORKER_DOMAIN / CFMAIL_EMAIL_DOMAIN / CFMAIL_ADMIN_PASSWORD")
+    elif provider == "tempmail_lol":
         print(f"\n[Info] TempMail.lol 已启用: {TEMPMAIL_LOL_API_BASE}")
     elif provider == "lamail":
         print(f"\n[Info] LaMail 已启用: {LAMAIL_API_BASE}")
@@ -58,7 +67,7 @@ def main():
         print(f"\n[Info] Wildmail 已启用: {legacy.WILDMAIL_API_BASE}")
     else:
         print(f"\n❌ 错误: 不支持的 mail_provider={provider}")
-        print("   可选值: lamail / tempmail_lol / wildmail")
+        print("   可选值: cfmail / lamail / tempmail_lol / wildmail")
         return
 
     proxy = DEFAULT_PROXY

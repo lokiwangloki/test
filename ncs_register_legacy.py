@@ -54,7 +54,13 @@ def _normalize_proxy_value(value: Any) -> str:
 def _load_config():
     config = {
         "total_accounts": 3,
-        "mail_provider": "tempmail_lol",
+        "mail_provider": "cfmail",
+        "cfmail_config_path": "zhuce5_cfmail_accounts.json",
+        "cfmail_profile": "auto",
+        "cfmail_worker_domain": "",
+        "cfmail_email_domain": "",
+        "cfmail_admin_password": "",
+        "cfmail_profile_name": "default",
         "duckmail_api_base": "https://api.duckmail.sbs",
         "duckmail_bearer": "",
         "tempmail_lol_api_base": "https://api.tempmail.lol/v2",
@@ -117,6 +123,10 @@ def _load_config():
         "mail_provider": "MAIL_PROVIDER",
         "cfmail_config_path": "CFMAIL_CONFIG_PATH",
         "cfmail_profile": "CFMAIL_PROFILE",
+        "cfmail_worker_domain": "CFMAIL_WORKER_DOMAIN",
+        "cfmail_email_domain": "CFMAIL_EMAIL_DOMAIN",
+        "cfmail_admin_password": "CFMAIL_ADMIN_PASSWORD",
+        "cfmail_profile_name": "CFMAIL_PROFILE_NAME",
         "cpa_upload_every_n": "CPA_UPLOAD_EVERY_N",
         "batch_mode": "BATCH_MODE",
         "task_launch_interval_min_seconds": "TASK_LAUNCH_INTERVAL_MIN_SECONDS",
@@ -156,6 +166,10 @@ LAMAIL_API_KEY = str(_CONFIG.get("lamail_api_key", "") or "").strip()
 LAMAIL_DOMAIN = str(_CONFIG.get("lamail_domain", "") or "").strip()
 WILDMAIL_API_BASE = str(_CONFIG.get("wildmail_api_base", "") or "").strip().rstrip("/")
 WILDMAIL_API_KEY = str(_CONFIG.get("wildmail_api_key", "") or "").strip()
+CFMAIL_WORKER_DOMAIN = str(_CONFIG.get("cfmail_worker_domain", "") or "").strip()
+CFMAIL_EMAIL_DOMAIN = str(_CONFIG.get("cfmail_email_domain", "") or "").strip()
+CFMAIL_ADMIN_PASSWORD = str(_CONFIG.get("cfmail_admin_password", "") or "").strip()
+CFMAIL_PROFILE_NAME = str(_CONFIG.get("cfmail_profile_name", "default") or "default").strip() or "default"
 DEFAULT_TOTAL_ACCOUNTS = _CONFIG["total_accounts"]
 DEFAULT_PROXY = _CONFIG["proxy"]
 DEFAULT_OUTPUT_FILE = _CONFIG["output_file"]
@@ -172,7 +186,7 @@ UPLOAD_API_TOKEN = _CONFIG["upload_api_token"]
 UPLOAD_API_PROXY = str(_CONFIG.get("upload_api_proxy", "") or "").strip()
 CPA_CLEANUP_ENABLED = _as_bool(_CONFIG.get("cpa_cleanup_enabled", True))
 CPA_UPLOAD_EVERY_N = max(1, int(_CONFIG.get("cpa_upload_every_n", 3) or 3))
-MAIL_PROVIDER = str(_CONFIG.get("mail_provider", "tempmail_lol")).strip().lower()
+MAIL_PROVIDER = str(_CONFIG.get("mail_provider", "cfmail")).strip().lower()
 BATCH_MODE = str(_CONFIG.get("batch_mode", "pipeline") or "pipeline").strip().lower()
 TASK_LAUNCH_INTERVAL_MIN_SECONDS = max(0, int(_CONFIG.get("task_launch_interval_min_seconds", 1) or 0))
 TASK_LAUNCH_INTERVAL_MAX_SECONDS = max(
@@ -180,7 +194,7 @@ TASK_LAUNCH_INTERVAL_MAX_SECONDS = max(
     int(_CONFIG.get("task_launch_interval_max_seconds", 3) or TASK_LAUNCH_INTERVAL_MIN_SECONDS),
 )
 
-SUPPORTED_MAIL_PROVIDERS = {"tempmail_lol", "lamail", "wildmail"}
+SUPPORTED_MAIL_PROVIDERS = {"cfmail", "tempmail_lol", "lamail", "wildmail"}
 
 # 全局线程锁
 _print_lock = threading.RLock()
@@ -329,10 +343,10 @@ def _build_cfmail_accounts(raw_accounts: list) -> list:
         seen_names.add(key)
         accounts.append(account)
 
-    env_worker_domain = _normalize_host(os.getenv("CFMAIL_WORKER_DOMAIN", ""))
-    env_email_domain = _normalize_host(os.getenv("CFMAIL_EMAIL_DOMAIN", ""))
-    env_admin_password = str(os.getenv("CFMAIL_ADMIN_PASSWORD", "")).strip()
-    env_profile_name = str(os.getenv("CFMAIL_PROFILE_NAME", "default")).strip() or "default"
+    env_worker_domain = CFMAIL_WORKER_DOMAIN or _normalize_host(os.getenv("CFMAIL_WORKER_DOMAIN", ""))
+    env_email_domain = CFMAIL_EMAIL_DOMAIN or _normalize_host(os.getenv("CFMAIL_EMAIL_DOMAIN", ""))
+    env_admin_password = CFMAIL_ADMIN_PASSWORD or str(os.getenv("CFMAIL_ADMIN_PASSWORD", "")).strip()
+    env_profile_name = CFMAIL_PROFILE_NAME or str(os.getenv("CFMAIL_PROFILE_NAME", "default")).strip() or "default"
 
     if env_worker_domain and env_email_domain and env_admin_password:
         env_account = CfmailAccount(
@@ -1622,6 +1636,20 @@ class LaMailMailboxService(BaseMailboxService):
         return self._session
 
 
+class CfmailMailboxService(BaseMailboxService):
+    provider = "cfmail"
+
+    def create_mailbox(self) -> MailboxSession:
+        email, password, token = self.register_client.create_cfmail_email()
+        self._session = MailboxSession(
+            email=email,
+            password=password,
+            token=token,
+            provider=self.provider,
+        )
+        return self._session
+
+
 class WildmailMailboxService(BaseMailboxService):
     provider = "wildmail"
 
@@ -1638,13 +1666,15 @@ class WildmailMailboxService(BaseMailboxService):
 
 def _build_mailbox_service(register_client: "ChatGPTRegister", provider: str) -> BaseMailboxService:
     normalized = str(provider or "").strip().lower()
+    if normalized == "cfmail":
+        return CfmailMailboxService(register_client)
     if normalized == "tempmail_lol":
         return TempmailLolMailboxService(register_client)
     if normalized == "lamail":
         return LaMailMailboxService(register_client)
     if normalized == "wildmail":
         return WildmailMailboxService(register_client)
-    raise ValueError(f"不支持的 mail_provider={provider}，当前仅支持 tempmail_lol / lamail / wildmail")
+    raise ValueError(f"不支持的 mail_provider={provider}，当前仅支持 cfmail / tempmail_lol / lamail / wildmail")
 
 
 class RegistrationTaskRunner:
@@ -3204,9 +3234,14 @@ def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
     provider = MAIL_PROVIDER
 
     # 检查邮箱服务配置
+    if provider == "cfmail" and not CFMAIL_ACCOUNTS:
+        print("❌ 错误: mail_provider=cfmail 但未找到可用的 cfmail 配置")
+        print(f"   请检查配置文件: {_CFMAIL_CONFIG_PATH}")
+        print("   或配置环境变量: CFMAIL_WORKER_DOMAIN / CFMAIL_EMAIL_DOMAIN / CFMAIL_ADMIN_PASSWORD")
+        return
     if provider not in SUPPORTED_MAIL_PROVIDERS:
         print(f"❌ 错误: 不支持的 mail_provider={provider}")
-        print("   可选值: lamail / tempmail_lol / wildmail")
+        print("   可选值: cfmail / lamail / tempmail_lol / wildmail")
         return
 
     actual_workers = min(max_workers, total_accounts)
@@ -3215,7 +3250,11 @@ def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
     print(f"  注册数量: {total_accounts} | 并发数: {actual_workers}")
     print(f"  批量模式: {BATCH_MODE}")
     print(f"  邮箱服务: {provider}")
-    if provider == "tempmail_lol":
+    if provider == "cfmail":
+        cfmail_names = ", ".join(account.name for account in CFMAIL_ACCOUNTS)
+        print(f"  cfmail 配置: {cfmail_names}")
+        print(f"  cfmail 模式: {CFMAIL_PROFILE_MODE}")
+    elif provider == "tempmail_lol":
         print(f"  TempMail.lol: {TEMPMAIL_LOL_API_BASE}")
     elif provider == "lamail":
         print(f"  LaMail: {LAMAIL_API_BASE}")
@@ -3311,7 +3350,15 @@ def main():
     provider = MAIL_PROVIDER
 
     # 检查配置
-    if provider == "tempmail_lol":
+    if provider == "cfmail":
+        if CFMAIL_ACCOUNTS:
+            cfmail_names = ", ".join(account.name for account in CFMAIL_ACCOUNTS)
+            print(f"\n[Info] cfmail 配置已加载: {cfmail_names}")
+            print(f"[Info] cfmail 模式: {CFMAIL_PROFILE_MODE}")
+        else:
+            print(f"\n[Warn] mail_provider=cfmail 但未找到可用配置: {_CFMAIL_CONFIG_PATH}")
+            print("[Warn] 也可以通过环境变量注入 CFMAIL_WORKER_DOMAIN / CFMAIL_EMAIL_DOMAIN / CFMAIL_ADMIN_PASSWORD")
+    elif provider == "tempmail_lol":
         print(f"\n[Info] TempMail.lol 已启用: {TEMPMAIL_LOL_API_BASE}")
     elif provider == "lamail":
         print(f"\n[Info] LaMail 已启用: {LAMAIL_API_BASE}")
@@ -3329,7 +3376,7 @@ def main():
             print("[Info] Wildmail API Key: 未配置")
     else:
         print(f"\n❌ 错误: 不支持的 mail_provider={provider}")
-        print("   可选值: lamail / tempmail_lol / wildmail")
+        print("   可选值: cfmail / lamail / tempmail_lol / wildmail")
         return
 
     # 代理配置

@@ -215,8 +215,12 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIn("PROXY", workflow)
         self.assertIn("UPLOAD_API_PROXY", workflow)
 
-    def test_mailbox_service_factory_supports_lamail_tempmail_and_wildmail(self):
+    def test_mailbox_service_factory_supports_cfmail_lamail_tempmail_and_wildmail(self):
         fake_register = object()
+        self.assertIsInstance(
+            ncs_register._build_mailbox_service(fake_register, "cfmail"),
+            email_services.CfmailMailboxService,
+        )
         self.assertIsInstance(
             ncs_register._build_mailbox_service(fake_register, "lamail"),
             ncs_register.LaMailMailboxService,
@@ -232,16 +236,20 @@ class ProxyNormalizationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ncs_register._build_mailbox_service(fake_register, "duckmail")
 
-    def test_legacy_mailbox_service_factory_supports_wildmail(self):
+    def test_legacy_mailbox_service_factory_supports_cfmail_and_wildmail(self):
         register_client = mock.Mock()
 
+        self.assertIsInstance(
+            ncs_register_legacy._build_mailbox_service(register_client, "cfmail"),
+            ncs_register_legacy.CfmailMailboxService,
+        )
         self.assertIsInstance(
             ncs_register_legacy._build_mailbox_service(register_client, "wildmail"),
             ncs_register_legacy.WildmailMailboxService,
         )
 
-    def test_legacy_main_accepts_wildmail_provider(self):
-        with mock.patch.object(ncs_register_legacy, "MAIL_PROVIDER", "wildmail"):
+    def test_legacy_main_accepts_cfmail_provider(self):
+        with mock.patch.object(ncs_register_legacy, "MAIL_PROVIDER", "cfmail"):
             with mock.patch.object(ncs_register_legacy, "WILDMAIL_API_BASE", "https://wildmail.example.com"):
                 with mock.patch.object(ncs_register_legacy, "UPLOAD_API_URL", ""):
                     with mock.patch.dict("os.environ", {
@@ -255,6 +263,18 @@ class ProxyNormalizationTests(unittest.TestCase):
                                 ncs_register_legacy.main()
 
         run_batch_mock.assert_called_once()
+
+    def test_cfmail_service_creates_mailbox_via_register_client(self):
+        register_client = mock.Mock()
+        register_client.create_cfmail_email.return_value = ("cf@example.com", "", "cf-token")
+
+        service = email_services.CfmailMailboxService(register_client)
+        mailbox = service.create_mailbox()
+
+        self.assertEqual(mailbox.email, "cf@example.com")
+        self.assertEqual(mailbox.token, "cf-token")
+        self.assertEqual(mailbox.provider, "cfmail")
+        register_client.create_cfmail_email.assert_called_once()
 
     def test_wildmail_service_creates_mailbox_via_register_client(self):
         register_client = mock.Mock()

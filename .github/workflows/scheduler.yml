@@ -61,7 +61,10 @@ jobs:
       - name: Run auto_scheduler
         env:
           PYTHONUNBUFFERED: 1
-          MAIL_PROVIDER: wildmail
+          MAIL_PROVIDER: cfmail
+          CFMAIL_WORKER_DOMAIN: ${{ secrets.CFMAIL_WORKER_DOMAIN }}
+          CFMAIL_EMAIL_DOMAIN: ${{ secrets.CFMAIL_EMAIL_DOMAIN }}
+          CFMAIL_ADMIN_PASSWORD: ${{ secrets.CFMAIL_ADMIN_PASSWORD }}
           LAMAIL_DOMAIN: ${{ secrets.LAMAIL_DOMAIN }}
           LAMAIL_API_KEY: ${{ secrets.LAMAIL_API_KEY }}
           WILDMAIL_API_BASE: ${{ secrets.WILDMAIL_API_BASE }}
