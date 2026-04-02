@@ -451,6 +451,75 @@ class ProxyNormalizationTests(unittest.TestCase):
         register.perform_codex_oauth_login_http.assert_called_once()
         register.fetch_chatgpt_session_tokens.assert_called_once_with("user@example.com")
 
+    def test_run_register_does_not_treat_auth_authorize_url_with_chatgpt_redirect_query_as_complete(self):
+        register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)
+        register._print = mock.Mock()
+        register.visit_homepage = mock.Mock()
+        register.get_csrf = mock.Mock(return_value="csrf-token")
+        register.signin = mock.Mock(return_value="https://auth.openai.com/api/accounts/authorize")
+        register.authorize = mock.Mock(
+            return_value=(
+                "https://auth.openai.com/api/accounts/authorize"
+                "?redirect_uri=https%3A%2F%2Fchatgpt.com%2Fapi%2Fauth%2Fcallback%2Fopenai"
+            )
+        )
+        register.register = mock.Mock(return_value=(200, {}))
+        register.send_otp = mock.Mock(return_value=(200, {}))
+        register.wait_for_verification_email = mock.Mock(return_value="123456")
+        register.validate_otp = mock.Mock(return_value=(200, {}))
+        register.create_account = mock.Mock(return_value=(200, {}))
+        register.callback = mock.Mock(return_value=(200, {"final_url": "https://chatgpt.com/"}))
+        register._cfmail_account_name = ""
+
+        with mock.patch("ncs_register_legacy._random_delay", return_value=None):
+            ok = ncs_register_legacy.ChatGPTRegister.run_register(
+                register,
+                "user@example.com",
+                "Password-1!",
+                "Noah Thomas",
+                "2002-05-11",
+                "mail-token",
+                provider="cfmail",
+            )
+
+        self.assertTrue(ok)
+        register.register.assert_called_once_with("user@example.com", "Password-1!")
+        register.send_otp.assert_called_once()
+        register.wait_for_verification_email.assert_called_once()
+        register.create_account.assert_called_once_with("Noah Thomas", "2002-05-11")
+        register.callback.assert_called_once()
+
+    def test_run_register_resends_otp_when_authorize_lands_on_email_verification(self):
+        register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)
+        register._print = mock.Mock()
+        register.visit_homepage = mock.Mock()
+        register.get_csrf = mock.Mock(return_value="csrf-token")
+        register.signin = mock.Mock(return_value="https://auth.openai.com/api/accounts/authorize")
+        register.authorize = mock.Mock(return_value="https://auth.openai.com/email-verification")
+        register.send_otp = mock.Mock(return_value=(200, {}))
+        register.wait_for_verification_email = mock.Mock(return_value="123456")
+        register.validate_otp = mock.Mock(return_value=(200, {}))
+        register.create_account = mock.Mock(return_value=(200, {}))
+        register.callback = mock.Mock(return_value=(200, {"final_url": "https://chatgpt.com/"}))
+        register._cfmail_account_name = ""
+
+        with mock.patch("ncs_register_legacy._random_delay", return_value=None):
+            ok = ncs_register_legacy.ChatGPTRegister.run_register(
+                register,
+                "user@example.com",
+                "Password-1!",
+                "Noah Thomas",
+                "2002-05-11",
+                "mail-token",
+                provider="cfmail",
+            )
+
+        self.assertTrue(ok)
+        register.send_otp.assert_called_once()
+        register.wait_for_verification_email.assert_called_once()
+        register.validate_otp.assert_called_once_with("123456")
+        register.create_account.assert_called_once_with("Noah Thomas", "2002-05-11")
+
     def test_ncs_register_main_exits_nonzero_when_batch_fails(self):
         with mock.patch("ncs_register.MAIL_PROVIDER", "tempmail_lol"):
             with mock.patch("ncs_register.DEFAULT_PROXY", ""):

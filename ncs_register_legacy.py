@@ -2594,7 +2594,9 @@ class ChatGPTRegister:
         auth_url = self.signin(email, csrf)
         _random_delay(0.3, 0.8)
         final_url = self.authorize(auth_url)
-        final_path = urlparse(final_url).path
+        parsed_final = urlparse(final_url)
+        final_path = parsed_final.path
+        final_host = str(parsed_final.hostname or "").strip().lower()
         _random_delay(0.3, 0.8)
         self._print(f"Authorize → {final_path}")
 
@@ -2611,6 +2613,10 @@ class ChatGPTRegister:
             need_otp = True
         elif "email-verification" in final_path or "email-otp" in final_path:
             self._print("跳到 OTP 验证阶段")
+            try:
+                self.send_otp()
+            except Exception as e:
+                self._print(f"[OTP] 补发验证码异常，继续等待已有邮件: {e}")
             need_otp = True
         elif "about-you" in final_path:
             self._print("跳到填写信息阶段")
@@ -2619,7 +2625,7 @@ class ChatGPTRegister:
             _random_delay(0.3, 0.5)
             self.callback()
             return True
-        elif "callback" in final_path or "chatgpt.com" in final_url:
+        elif "callback" in final_path or final_host.endswith("chatgpt.com"):
             self._print("账号已完成注册")
             return True
         else:
