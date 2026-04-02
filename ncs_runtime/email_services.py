@@ -57,7 +57,11 @@ class LaMailMailboxService(BaseMailboxService):
 
 def should_fallback_to_lamail(error: Exception) -> bool:
     text = str(error or "").lower()
-    return "tempmail.lol" in text and "429" in text and "rate limited" in text
+    if "tempmail" not in text:
+        return False
+    if "429" in text:
+        return True
+    return any(marker in text for marker in ("rate limit", "too many requests", "rate limited"))
 
 
 def build_mailbox_service(register_client: "legacy.ChatGPTRegister", provider: str) -> BaseMailboxService:

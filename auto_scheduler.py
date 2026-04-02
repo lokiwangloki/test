@@ -433,10 +433,11 @@ def run_once():
         needed = ACCOUNT_THRESHOLD - count
         print(f"[检测] ⚠️  账号不足！缺口 {needed} 个，触发自动注册...")
         register_params = dict(AUTO_PARAMS)
-        register_params["total_accounts"] = max(
-            int(AUTO_PARAMS.get("total_accounts", 10)), needed
-        )
-        trigger_registration(register_params, cfg)
+        register_params["total_accounts"] = max(1, needed)
+        success = trigger_registration(register_params, cfg)
+        if not success:
+            print("[调度] 注册执行失败，本轮以失败结束")
+            return False
         # 注册完成后重新加载配置
         cfg = _load_account_count_config()
         use_cpa = bool(cfg.get("upload_api_url") and cfg.get("upload_api_token"))
@@ -444,6 +445,7 @@ def run_once():
         print(f"[检测] ✅ 账号数量充足，无需注册")
 
     print("[调度] 本轮执行完成，等待 GitHub Actions 下一次定时触发")
+    return True
 
 
 # ================= 主入口 =================
@@ -463,7 +465,9 @@ def main():
         use_cpa = bool(cfg.get("upload_api_url") and cfg.get("upload_api_token"))
         print(f"[Info] 账号计数方式: {'CPA API 探测（401/403自动删除）' if use_cpa else '本地文件统计'}")
         print(f"[Info] 本次运行结束后会直接退出，等待下次 workflow 触发\n")
-        run_once()
+        ok = run_once()
+        if not ok:
+            raise SystemExit(1)
     except KeyboardInterrupt:
         print("\n[调度] 已手动停止调度器")
 

@@ -102,7 +102,7 @@ def main():
     upload_n_input = input(f"每成功多少个账号触发 CPA 上传 (默认 {CPA_UPLOAD_EVERY_N}): ").strip()
     cpa_upload_every_n = int(upload_n_input) if upload_n_input else CPA_UPLOAD_EVERY_N
 
-    run_batch(
+    ok = run_batch(
         total_accounts=total_accounts,
         output_file=output_file,
         max_workers=max_workers,
@@ -110,6 +110,8 @@ def main():
         cpa_cleanup=cpa_cleanup,
         cpa_upload_every_n=cpa_upload_every_n,
     )
+    if not ok:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

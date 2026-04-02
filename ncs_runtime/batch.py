@@ -18,7 +18,7 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
     if provider not in legacy.SUPPORTED_MAIL_PROVIDERS:
         print(f"❌ 错误: 不支持的 mail_provider={provider}")
         print("   可选值: lamail / tempmail_lol")
-        return
+        return False
 
     actual_workers = min(max_workers, total_accounts)
     print(f"\n{'#' * 60}")
@@ -110,3 +110,4 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
             print(f"\n[CPA] 收尾上传剩余 {since_last_upload} 个成功账号对应 token...")
         legacy._upload_all_tokens_to_cpa()
 
+    return success_count > 0

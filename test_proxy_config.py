@@ -113,6 +113,25 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(auto_scheduler.ACCOUNT_THRESHOLD, 1000)
         self.assertEqual(auto_scheduler.AUTO_PARAMS["total_accounts"], 1000)
 
+    def test_run_once_registers_only_missing_gap(self):
+        cfg = {"upload_api_url": "", "upload_api_token": ""}
+        with mock.patch("auto_scheduler._load_account_count_config", return_value=cfg):
+            with mock.patch("auto_scheduler.count_valid_accounts_local", return_value=999):
+                with mock.patch("auto_scheduler.trigger_registration", return_value=True) as trigger_mock:
+                    result = auto_scheduler.run_once()
+
+        self.assertTrue(result)
+        params, passed_cfg = trigger_mock.call_args[0]
+        self.assertEqual(params["total_accounts"], 1)
+        self.assertEqual(passed_cfg, cfg)
+
+    def test_run_once_returns_false_when_trigger_registration_fails(self):
+        cfg = {"upload_api_url": "", "upload_api_token": ""}
+        with mock.patch("auto_scheduler._load_account_count_config", return_value=cfg):
+            with mock.patch("auto_scheduler.count_valid_accounts_local", return_value=999):
+                with mock.patch("auto_scheduler.trigger_registration", return_value=False):
+                    self.assertFalse(auto_scheduler.run_once())
+
     def test_cpa_root_url_normalizes_to_management_auth_files(self):
         self.assertEqual(
             auto_scheduler._cpa_auth_files_url("http://example.com:8317"),
@@ -126,7 +145,7 @@ class ProxyNormalizationTests(unittest.TestCase):
     def test_auto_scheduler_main_runs_once_without_sleep(self):
         with mock.patch("auto_scheduler._load_account_count_config", return_value={}):
             with mock.patch("auto_scheduler.count_valid_accounts_local", return_value=999):
-                with mock.patch("auto_scheduler.trigger_registration", return_value=None):
+                with mock.patch("auto_scheduler.trigger_registration", return_value=True):
                     with mock.patch("auto_scheduler.time.sleep") as sleep_mock:
                         auto_scheduler.main()
 
@@ -195,6 +214,21 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(provider, "lamail")
         self.assertEqual(mailbox.email, "fallback@example.com")
 
+    def test_tempmail_http_429_without_rate_limit_phrase_still_falls_back(self):
+        register_client = mock.Mock()
+        register_client.create_tempmail_lol_email.side_effect = Exception(
+            "TempMail.lol 创建失败: HTTP 429 Too Many Requests"
+        )
+        register_client.create_lamail_email.return_value = ("fallback2@example.com", "", "token-2")
+        register_client._print = mock.Mock()
+
+        engine = runtime_engine.RegistrationEngine(idx=1, total=1, proxy=None, output_file="out.txt")
+        service, mailbox, provider = engine._create_mailbox_with_fallback(register_client, "tempmail_lol")
+
+        self.assertIsInstance(service, email_services.LaMailMailboxService)
+        self.assertEqual(provider, "lamail")
+        self.assertEqual(mailbox.email, "fallback2@example.com")
+
     def test_registration_engine_uses_legacy_oauth_flow(self):
         mailbox_service = mock.Mock()
         mailbox_service.create_mailbox.return_value = ncs_register.MailboxSession(
@@ -222,6 +256,30 @@ class ProxyNormalizationTests(unittest.TestCase):
         register_client.run_register.assert_called_once()
         register_client.fetch_codex_session_tokens.assert_called_once()
         save_tokens_mock.assert_called_once()
+
+    def test_ncs_register_main_exits_nonzero_when_batch_fails(self):
+        with mock.patch("ncs_register.MAIL_PROVIDER", "tempmail_lol"):
+            with mock.patch("ncs_register.DEFAULT_PROXY", ""):
+                with mock.patch("ncs_register.legacy.UPLOAD_API_URL", ""):
+                    with mock.patch.dict("os.environ", {
+                        "HTTPS_PROXY": "",
+                        "https_proxy": "",
+                        "ALL_PROXY": "",
+                        "all_proxy": "",
+                    }, clear=False):
+                        with mock.patch("builtins.input", side_effect=[
+                            "",   # proxy
+                            "n",  # preflight
+                            "registered_accounts.txt",
+                            "1",
+                            "1",
+                            "3",
+                        ]):
+                            with mock.patch("ncs_register.run_batch", return_value=False):
+                                with self.assertRaises(SystemExit) as exc:
+                                    ncs_register.main()
+
+        self.assertEqual(exc.exception.code, 1)
 
     def test_load_config_supports_batch_runtime_defaults(self):
         fake_config = {
