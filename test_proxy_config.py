@@ -51,10 +51,16 @@ class ProxyNormalizationTests(unittest.TestCase):
             "lamail_api_key_env": "MY_LAMAIL_KEY",
             "lamail_domain": "",
             "lamail_domain_env": "MY_LAMAIL_DOMAIN",
+            "wildmail_api_base": "",
+            "wildmail_api_base_env": "MY_WILDMAIL_API_BASE",
+            "wildmail_api_key": "",
+            "wildmail_api_key_env": "MY_WILDMAIL_API_KEY",
         }
         with mock.patch.dict("os.environ", {
             "MY_LAMAIL_KEY": "secret-key",
             "MY_LAMAIL_DOMAIN": "mail.example.com",
+            "MY_WILDMAIL_API_BASE": "https://mail.example.com",
+            "MY_WILDMAIL_API_KEY": "wildmail-secret",
         }, clear=False):
             with mock.patch("ncs_register.os.path.exists", return_value=True):
                 with mock.patch("builtins.open", mock.mock_open(read_data="{}")):
@@ -63,6 +69,8 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         self.assertEqual(config["lamail_api_key"], "secret-key")
         self.assertEqual(config["lamail_domain"], "mail.example.com")
+        self.assertEqual(config["wildmail_api_base"], "https://mail.example.com")
+        self.assertEqual(config["wildmail_api_key"], "wildmail-secret")
 
     def test_auto_scheduler_load_account_count_config_supports_env_name_mapping(self):
         fake_config = {
@@ -186,7 +194,7 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIn("LAMAIL_DOMAIN", workflow)
         self.assertIn("LAMAIL_API_KEY", workflow)
 
-    def test_mailbox_service_factory_supports_lamail_and_tempmail_only(self):
+    def test_mailbox_service_factory_supports_lamail_tempmail_and_wildmail(self):
         fake_register = object()
         self.assertIsInstance(
             ncs_register._build_mailbox_service(fake_register, "lamail"),
@@ -196,8 +204,48 @@ class ProxyNormalizationTests(unittest.TestCase):
             ncs_register._build_mailbox_service(fake_register, "tempmail_lol"),
             ncs_register.TempmailLolMailboxService,
         )
+        self.assertIsInstance(
+            ncs_register._build_mailbox_service(fake_register, "wildmail"),
+            email_services.WildmailMailboxService,
+        )
         with self.assertRaises(ValueError):
             ncs_register._build_mailbox_service(fake_register, "duckmail")
+
+    def test_legacy_mailbox_service_factory_supports_wildmail(self):
+        register_client = mock.Mock()
+
+        self.assertIsInstance(
+            ncs_register_legacy._build_mailbox_service(register_client, "wildmail"),
+            ncs_register_legacy.WildmailMailboxService,
+        )
+
+    def test_legacy_main_accepts_wildmail_provider(self):
+        with mock.patch.object(ncs_register_legacy, "MAIL_PROVIDER", "wildmail"):
+            with mock.patch.object(ncs_register_legacy, "WILDMAIL_API_BASE", "https://wildmail.example.com"):
+                with mock.patch.object(ncs_register_legacy, "UPLOAD_API_URL", ""):
+                    with mock.patch.dict("os.environ", {
+                        "HTTPS_PROXY": "",
+                        "https_proxy": "",
+                        "ALL_PROXY": "",
+                        "all_proxy": "",
+                    }, clear=False):
+                        with mock.patch("builtins.input", side_effect=["", "n", "", "", ""]):
+                            with mock.patch.object(ncs_register_legacy, "run_batch") as run_batch_mock:
+                                ncs_register_legacy.main()
+
+        run_batch_mock.assert_called_once()
+
+    def test_wildmail_service_creates_mailbox_via_register_client(self):
+        register_client = mock.Mock()
+        register_client.create_wildmail_email.return_value = ("wild@example.com", "", "wild-token")
+
+        service = email_services.WildmailMailboxService(register_client)
+        mailbox = service.create_mailbox()
+
+        self.assertEqual(mailbox.email, "wild@example.com")
+        self.assertEqual(mailbox.token, "wild-token")
+        self.assertEqual(mailbox.provider, "wildmail")
+        register_client.create_wildmail_email.assert_called_once()
 
     def test_tempmail_rate_limit_falls_back_to_lamail(self):
         register_client = mock.Mock()

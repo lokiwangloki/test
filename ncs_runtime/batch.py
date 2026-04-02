@@ -17,7 +17,7 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
     provider = legacy.MAIL_PROVIDER
     if provider not in legacy.SUPPORTED_MAIL_PROVIDERS:
         print(f"❌ 错误: 不支持的 mail_provider={provider}")
-        print("   可选值: lamail / tempmail_lol")
+        print("   可选值: lamail / tempmail_lol / wildmail")
         return False
 
     actual_workers = min(max_workers, total_accounts)
@@ -32,6 +32,8 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
         print(f"  LaMail: {legacy.LAMAIL_API_BASE}")
         if legacy.LAMAIL_DOMAIN:
             print(f"  LaMail 域名: {legacy.LAMAIL_DOMAIN}")
+    elif provider == "wildmail":
+        print(f"  Wildmail: {legacy.WILDMAIL_API_BASE}")
     print(f"  OAuth: {'开启' if legacy.ENABLE_OAUTH else '关闭'} | required: {'是' if legacy.OAUTH_REQUIRED else '否'}")
     if legacy.ENABLE_OAUTH:
         print(f"  Token输出: {legacy.TOKEN_JSON_DIR}/, {legacy.AK_FILE}, {legacy.RK_FILE}")

@@ -55,6 +55,15 @@ class LaMailMailboxService(BaseMailboxService):
         return self._session
 
 
+class WildmailMailboxService(BaseMailboxService):
+    provider = "wildmail"
+
+    def create_mailbox(self) -> MailboxSession:
+        email, password, token = self.register_client.create_wildmail_email()
+        self._session = MailboxSession(email=email, password=password, token=token, provider=self.provider)
+        return self._session
+
+
 def should_fallback_to_lamail(error: Exception) -> bool:
     text = str(error or "").lower()
     if "tempmail" not in text:
@@ -70,4 +79,6 @@ def build_mailbox_service(register_client: "legacy.ChatGPTRegister", provider: s
         return TempmailLolMailboxService(register_client)
     if normalized == "lamail":
         return LaMailMailboxService(register_client)
-    raise ValueError(f"不支持的 mail_provider={provider}，当前仅支持 tempmail_lol / lamail")
+    if normalized == "wildmail":
+        return WildmailMailboxService(register_client)
+    raise ValueError(f"不支持的 mail_provider={provider}，当前仅支持 tempmail_lol / lamail / wildmail")

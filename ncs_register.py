@@ -10,6 +10,7 @@ from ncs_runtime.email_services import (
     LaMailMailboxService,
     MailboxSession,
     TempmailLolMailboxService,
+    WildmailMailboxService,
     build_mailbox_service,
 )
 from ncs_runtime.engine import RegistrationEngine, RegistrationResult
@@ -53,9 +54,11 @@ def main():
         print(f"\n[Info] LaMail 已启用: {LAMAIL_API_BASE}")
         if LAMAIL_DOMAIN:
             print(f"[Info] LaMail 指定域名: {LAMAIL_DOMAIN}")
+    elif provider == "wildmail":
+        print(f"\n[Info] Wildmail 已启用: {legacy.WILDMAIL_API_BASE}")
     else:
         print(f"\n❌ 错误: 不支持的 mail_provider={provider}")
-        print("   可选值: lamail / tempmail_lol")
+        print("   可选值: lamail / tempmail_lol / wildmail")
         return
 
     proxy = DEFAULT_PROXY

@@ -61,6 +61,8 @@ def _load_config():
         "lamail_api_base": "https://maliapi.215.im/v1",
         "lamail_api_key": "",
         "lamail_domain": "",
+        "wildmail_api_base": "",
+        "wildmail_api_key": "",
         "proxy": "",
         "output_file": "registered_accounts.txt",
         "enable_oauth": True,
@@ -97,6 +99,8 @@ def _load_config():
         "lamail_api_base": "LAMAIL_API_BASE",
         "lamail_api_key": "LAMAIL_API_KEY",
         "lamail_domain": "LAMAIL_DOMAIN",
+        "wildmail_api_base": "WILDMAIL_API_BASE",
+        "wildmail_api_key": "WILDMAIL_API_KEY",
         "proxy": "PROXY",
         "total_accounts": "TOTAL_ACCOUNTS",
         "enable_oauth": "ENABLE_OAUTH",
@@ -150,6 +154,8 @@ TEMPMAIL_LOL_API_BASE = _CONFIG.get("tempmail_lol_api_base", "https://api.tempma
 LAMAIL_API_BASE = _CONFIG.get("lamail_api_base", "https://maliapi.215.im/v1").rstrip("/")
 LAMAIL_API_KEY = str(_CONFIG.get("lamail_api_key", "") or "").strip()
 LAMAIL_DOMAIN = str(_CONFIG.get("lamail_domain", "") or "").strip()
+WILDMAIL_API_BASE = str(_CONFIG.get("wildmail_api_base", "") or "").strip().rstrip("/")
+WILDMAIL_API_KEY = str(_CONFIG.get("wildmail_api_key", "") or "").strip()
 DEFAULT_TOTAL_ACCOUNTS = _CONFIG["total_accounts"]
 DEFAULT_PROXY = _CONFIG["proxy"]
 DEFAULT_OUTPUT_FILE = _CONFIG["output_file"]
@@ -174,7 +180,7 @@ TASK_LAUNCH_INTERVAL_MAX_SECONDS = max(
     int(_CONFIG.get("task_launch_interval_max_seconds", 3) or TASK_LAUNCH_INTERVAL_MIN_SECONDS),
 )
 
-SUPPORTED_MAIL_PROVIDERS = {"tempmail_lol", "lamail"}
+SUPPORTED_MAIL_PROVIDERS = {"tempmail_lol", "lamail", "wildmail"}
 
 # 全局线程锁
 _print_lock = threading.RLock()
@@ -462,6 +468,13 @@ def _cfmail_headers(*, jwt: str = "", use_json: bool = False) -> Dict[str, str]:
         headers["Content-Type"] = "application/json"
     if jwt:
         headers["Authorization"] = f"Bearer {jwt}"
+    return headers
+
+
+def _wildmail_headers(*, api_key: str = "") -> Dict[str, str]:
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["x-api-key"] = api_key
     return headers
 
 
@@ -1490,6 +1503,16 @@ def _quick_preflight(proxy: str = None, provider: str = "duckmail") -> bool:
         except Exception as e:
             _record("lamail api", False, f"异常: {e}")
 
+    if provider == "wildmail":
+        try:
+            if not WILDMAIL_API_BASE:
+                raise Exception("WILDMAIL_API_BASE 未设置")
+            r = sess.get(f"{WILDMAIL_API_BASE}/health_check", timeout=20, allow_redirects=True)
+            ok = r.status_code < 500
+            _record("wildmail api", ok, f"status={r.status_code}")
+        except Exception as e:
+            _record("wildmail api", False, f"异常: {e}")
+
     all_ok = all(ok for _, ok, _ in checks)
     if all_ok:
         print("[Preflight] 通过，开始注册。")
@@ -1569,13 +1592,29 @@ class LaMailMailboxService(BaseMailboxService):
         return self._session
 
 
+class WildmailMailboxService(BaseMailboxService):
+    provider = "wildmail"
+
+    def create_mailbox(self) -> MailboxSession:
+        email, password, token = self.register_client.create_wildmail_email()
+        self._session = MailboxSession(
+            email=email,
+            password=password,
+            token=token,
+            provider=self.provider,
+        )
+        return self._session
+
+
 def _build_mailbox_service(register_client: "ChatGPTRegister", provider: str) -> BaseMailboxService:
     normalized = str(provider or "").strip().lower()
     if normalized == "tempmail_lol":
         return TempmailLolMailboxService(register_client)
     if normalized == "lamail":
         return LaMailMailboxService(register_client)
-    raise ValueError(f"不支持的 mail_provider={provider}，当前仅支持 tempmail_lol / lamail")
+    if normalized == "wildmail":
+        return WildmailMailboxService(register_client)
+    raise ValueError(f"不支持的 mail_provider={provider}，当前仅支持 tempmail_lol / lamail / wildmail")
 
 
 class RegistrationTaskRunner:
@@ -1707,6 +1746,7 @@ class ChatGPTRegister:
         self._cfmail_api_base = ""
         self._cfmail_account_name = ""
         self._cfmail_mail_token = ""
+        self._wildmail_api_base = ""
 
     def _log(self, step, method, url, status, body=None):
         prefix = f"[{self.tag}] " if self.tag else ""
@@ -2097,6 +2137,103 @@ class ChatGPTRegister:
                     return m.group(1)
         return None
 
+    # ==================== Wildmail ====================
+
+    def create_wildmail_email(self):
+        """创建 Wildmail 邮箱，返回 (email, password, mail_token)"""
+        api_base = WILDMAIL_API_BASE.rstrip("/")
+        if not api_base:
+            raise Exception("wildmail 未配置：WILDMAIL_API_BASE 为空")
+
+        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        try:
+            resp = curl_requests.post(
+                f"{api_base}/open_api/wildmail/new",
+                headers={
+                    **_wildmail_headers(api_key=WILDMAIL_API_KEY),
+                    "Content-Type": "application/json",
+                },
+                json={},
+                proxies=proxies,
+                impersonate=self.impersonate,
+                timeout=15,
+            )
+        except Exception as e:
+            raise Exception(f"wildmail 请求异常: {e}")
+
+        if resp.status_code != 200:
+            raise Exception(f"wildmail 创建失败: {resp.status_code} - {resp.text[:200]}")
+
+        data = resp.json() if resp.content else {}
+        email = str(data.get("address") or "").strip()
+        token = str(data.get("token") or "").strip()
+        if not email or not token:
+            raise Exception("wildmail 返回数据不完整（address 或 token 为空）")
+
+        self._wildmail_api_base = api_base
+        self._print(f"[wildmail] 创建邮箱成功: {email}")
+        return email, "", token
+
+    def _fetch_emails_wildmail(self, mail_token: str):
+        """从 wildmail 拉取邮件列表"""
+        if not self._wildmail_api_base:
+            return []
+        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        try:
+            resp = curl_requests.get(
+                f"{self._wildmail_api_base}/open_api/wildmail/messages",
+                params={"token": mail_token},
+                headers=_wildmail_headers(api_key=WILDMAIL_API_KEY),
+                proxies=proxies,
+                impersonate=self.impersonate,
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                return []
+            data = resp.json() if resp.content else {}
+            address = str(data.get("address") or "").strip()
+            messages = data.get("messages", []) if isinstance(data, dict) else []
+            normalized = []
+            for msg in messages if isinstance(messages, list) else []:
+                if not isinstance(msg, dict):
+                    continue
+                item = dict(msg)
+                item.setdefault("address", address)
+                normalized.append(item)
+            return normalized
+        except Exception:
+            return []
+
+    def _extract_wildmail_code(self, messages: list, email: str) -> Optional[str]:
+        """从 wildmail 邮件列表中提取验证码"""
+        patterns = [
+            r"Subject:\s*Your ChatGPT code is\s*(\d{6})",
+            r"Your ChatGPT code is\s*(\d{6})",
+            r"temporary verification code to continue:\s*(\d{6})",
+            r"(?<![#&])\b(\d{6})\b",
+        ]
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            recipient = str(msg.get("address") or "").strip().lower()
+            if recipient and recipient != email.strip().lower():
+                continue
+            content = "\n".join([
+                str(msg.get("subject") or ""),
+                str(msg.get("text") or ""),
+                str(msg.get("html") or ""),
+                str(msg.get("raw") or ""),
+                str(msg.get("from") or ""),
+                json.dumps(msg.get("metadata") or {}, ensure_ascii=False),
+            ])
+            if "openai" not in content.lower() and "chatgpt" not in content.lower():
+                continue
+            for pattern in patterns:
+                match = re.search(pattern, content, re.I | re.S)
+                if match:
+                    return match.group(1)
+        return None
+
     # ==================== 统一等待验证码接口 ====================
 
     def wait_for_verification_email(self, mail_token: str, timeout: int = 120,
@@ -2110,7 +2247,17 @@ class ChatGPTRegister:
         while time.time() - start_time < timeout:
             code = None
 
-            if effective_provider == "cfmail":
+            if effective_provider == "wildmail":
+                messages = self._fetch_emails_wildmail(mail_token)
+                new_messages = _filter_unseen_otp_messages(
+                    self,
+                    seen_key,
+                    messages,
+                    lambda msg: msg.get("id") or msg.get("messageId") or msg.get("createdAt"),
+                )
+                if new_messages:
+                    code = self._extract_wildmail_code(new_messages, email)
+            elif effective_provider == "cfmail":
                 messages = self._fetch_emails_cfmail(mail_token)
                 new_messages = _filter_unseen_otp_messages(
                     self,
@@ -3025,7 +3172,7 @@ def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
     # 检查邮箱服务配置
     if provider not in SUPPORTED_MAIL_PROVIDERS:
         print(f"❌ 错误: 不支持的 mail_provider={provider}")
-        print("   可选值: lamail / tempmail_lol")
+        print("   可选值: lamail / tempmail_lol / wildmail")
         return
 
     actual_workers = min(max_workers, total_accounts)
@@ -3040,6 +3187,8 @@ def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
         print(f"  LaMail: {LAMAIL_API_BASE}")
         if LAMAIL_DOMAIN:
             print(f"  LaMail 域名: {LAMAIL_DOMAIN}")
+    elif provider == "wildmail":
+        print(f"  Wildmail: {WILDMAIL_API_BASE}")
     print(f"  OAuth: {'开启' if ENABLE_OAUTH else '关闭'} | required: {'是' if OAUTH_REQUIRED else '否'}")
     if ENABLE_OAUTH:
         print(f"  Token输出: {TOKEN_JSON_DIR}/, {AK_FILE}, {RK_FILE}")
@@ -3138,9 +3287,15 @@ def main():
             print("[Info] LaMail API Key: 已配置")
         else:
             print("[Info] LaMail API Key: 未配置（将使用匿名临时邮箱能力）")
+    elif provider == "wildmail":
+        print(f"\n[Info] Wildmail 已启用: {WILDMAIL_API_BASE}")
+        if WILDMAIL_API_KEY:
+            print("[Info] Wildmail API Key: 已配置")
+        else:
+            print("[Info] Wildmail API Key: 未配置")
     else:
         print(f"\n❌ 错误: 不支持的 mail_provider={provider}")
-        print("   可选值: lamail / tempmail_lol")
+        print("   可选值: lamail / tempmail_lol / wildmail")
         return
 
     # 代理配置
