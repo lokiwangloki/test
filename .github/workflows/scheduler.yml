@@ -47,6 +47,17 @@ jobs:
           print(f"CPA endpoint scheme valid: {'yes' if parsed.scheme in ('http', 'https') else 'no'}")
           PY
 
+      - name: Diagnose Wildmail
+        env:
+          WILDMAIL_API_BASE: ${{ secrets.WILDMAIL_API_BASE }}
+          WILDMAIL_API_KEY: ${{ secrets.WILDMAIL_API_KEY }}
+        run: |
+          if [ -n "${WILDMAIL_API_BASE}" ] && [ -n "${WILDMAIL_API_KEY}" ]; then
+            python -u scripts/diagnose_wildmail.py
+          else
+            echo "WILDMAIL secrets not configured, skip diagnose"
+          fi
+
       - name: Run auto_scheduler
         env:
           PYTHONUNBUFFERED: 1
