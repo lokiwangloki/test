@@ -90,9 +90,9 @@ class ProxyNormalizationTests(unittest.TestCase):
             "\nn\nregistered_accounts.txt\n500\n3\nn\n3\n",
         )
 
-    def test_auto_scheduler_defaults_target_3000_accounts(self):
-        self.assertEqual(auto_scheduler.ACCOUNT_THRESHOLD, 3000)
-        self.assertEqual(auto_scheduler.AUTO_PARAMS["total_accounts"], 3000)
+    def test_auto_scheduler_defaults_target_1000_accounts(self):
+        self.assertEqual(auto_scheduler.ACCOUNT_THRESHOLD, 1000)
+        self.assertEqual(auto_scheduler.AUTO_PARAMS["total_accounts"], 1000)
 
     def test_cpa_root_url_normalizes_to_management_auth_files(self):
         self.assertEqual(
