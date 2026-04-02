@@ -10,10 +10,10 @@ sys.modules.setdefault("curl_cffi", fake_curl_cffi)
 
 
 class V2FlowTests(unittest.TestCase):
-    def test_default_config_prefers_lamail_with_secret_mappings(self):
+    def test_default_config_prefers_tempmail_with_lamail_secret_mappings(self):
         config = Path("config.json").read_text(encoding="utf-8")
 
-        self.assertIn('"mail_provider": "lamail"', config)
+        self.assertIn('"mail_provider": "tempmail_lol"', config)
         self.assertIn('"lamail_api_key_env": "LAMAIL_API_KEY"', config)
         self.assertIn('"lamail_domain_env": "LAMAIL_DOMAIN"', config)
 
