@@ -87,6 +87,12 @@ def _load_config():
         "batch_mode": "pipeline",
         "task_launch_interval_min_seconds": 1,
         "task_launch_interval_max_seconds": 3,
+        "cf_auth_email": "",
+        "cf_auth_key": "",
+        "cf_account_id": "",
+        "cf_zone_id": "",
+        "cf_worker_name": "",
+        "cf_zone_name": "",
     }
 
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -131,6 +137,12 @@ def _load_config():
         "batch_mode": "BATCH_MODE",
         "task_launch_interval_min_seconds": "TASK_LAUNCH_INTERVAL_MIN_SECONDS",
         "task_launch_interval_max_seconds": "TASK_LAUNCH_INTERVAL_MAX_SECONDS",
+        "cf_auth_email": "CF_AUTH_EMAIL",
+        "cf_auth_key": "CF_AUTH_KEY",
+        "cf_account_id": "CF_ACCOUNT_ID",
+        "cf_zone_id": "CF_ZONE_ID",
+        "cf_worker_name": "CF_WORKER_NAME",
+        "cf_zone_name": "CF_ZONE_NAME",
     }
     for key, default_env_name in env_mappings.items():
         env_value = env_override(config, key, default_env_name)
@@ -187,6 +199,16 @@ UPLOAD_API_PROXY = str(_CONFIG.get("upload_api_proxy", "") or "").strip()
 CPA_CLEANUP_ENABLED = _as_bool(_CONFIG.get("cpa_cleanup_enabled", True))
 CPA_UPLOAD_EVERY_N = max(1, int(_CONFIG.get("cpa_upload_every_n", 3) or 3))
 MAIL_PROVIDER = str(_CONFIG.get("mail_provider", "cfmail")).strip().lower()
+CF_AUTH_EMAIL = str(_CONFIG.get("cf_auth_email", "") or "").strip()
+CF_AUTH_KEY = str(_CONFIG.get("cf_auth_key", "") or "").strip()
+CF_ACCOUNT_ID = str(_CONFIG.get("cf_account_id", "") or "").strip()
+CF_ZONE_ID = str(_CONFIG.get("cf_zone_id", "") or "").strip()
+CF_WORKER_NAME = str(_CONFIG.get("cf_worker_name", "") or "").strip()
+CF_ZONE_NAME = str(_CONFIG.get("cf_zone_name", "") or "").strip()
+CFMAIL_PROVISIONING_ENABLED = bool(
+    CF_AUTH_EMAIL and CF_AUTH_KEY and CF_ACCOUNT_ID
+    and CF_ZONE_ID and CF_WORKER_NAME and CF_ZONE_NAME
+)
 BATCH_MODE = str(_CONFIG.get("batch_mode", "pipeline") or "pipeline").strip().lower()
 TASK_LAUNCH_INTERVAL_MIN_SECONDS = max(0, int(_CONFIG.get("task_launch_interval_min_seconds", 1) or 0))
 TASK_LAUNCH_INTERVAL_MAX_SECONDS = max(

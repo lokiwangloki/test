@@ -1,4 +1,5 @@
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+import threading
 import time
 
 import ncs_register_legacy as legacy
@@ -8,7 +9,7 @@ from .engine import RegistrationEngine
 
 def run_single(idx: int, total: int, proxy: str, output_file: str):
     result = RegistrationEngine(idx=idx, total=total, proxy=proxy, output_file=output_file).run()
-    return result.success, result.email or None, result.error_message or None
+    return result.success, result.email or None, result.error_code or "", result.error_message or None
 
 
 def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.txt",
@@ -50,6 +51,61 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
     print(f"  输出文件: {output_file}")
     print(f"{'#' * 60}\n")
 
+    # cfmail 子域名自动配置
+    _provisioner = None
+    _health_tracker = None
+    _rotation_lock = threading.Lock()
+    _rotation_in_progress = [False]
+
+    if provider == "cfmail" and legacy.CFMAIL_PROVISIONING_ENABLED:
+        from .cfmail_provisioner import CfmailProvisioner, ProvisioningSettings
+        from .cfmail_domain_rotation import DomainHealthTracker, make_domain_attempt
+        _settings = ProvisioningSettings(
+            auth_email=legacy.CF_AUTH_EMAIL,
+            auth_key=legacy.CF_AUTH_KEY,
+            account_id=legacy.CF_ACCOUNT_ID,
+            zone_id=legacy.CF_ZONE_ID,
+            worker_name=legacy.CF_WORKER_NAME,
+            zone_name=legacy.CF_ZONE_NAME,
+        )
+        _provisioner = CfmailProvisioner(proxy_url=proxy, settings=_settings)
+        _health_tracker = DomainHealthTracker()
+        print("[cfmail] 正在初始化域名池...")
+        try:
+            norm = _provisioner.normalize_to_domain_pool(1)
+            if norm.get("provisioned_domains"):
+                print(f"[cfmail] 新增子域名: {', '.join(norm['provisioned_domains'])}")
+            print(f"[cfmail] 活跃域名: {', '.join(norm.get('active_domains') or [])}")
+        except Exception as _norm_err:
+            print(f"[cfmail] 域名池初始化失败（继续执行）: {_norm_err}")
+            _provisioner = None
+            _health_tracker = None
+
+    def _try_rotate_domain(domain: str, reason: str) -> None:
+        if _provisioner is None or _health_tracker is None:
+            return
+        with _rotation_lock:
+            if _rotation_in_progress[0]:
+                return
+            _rotation_in_progress[0] = True
+        try:
+            _health_tracker.mark_rotation_started(domain, reason)
+            print(f"\n[cfmail] 触发域名轮换: {domain} 原因: {reason}")
+            result = _provisioner.rotate_active_domain()
+            if result.success:
+                _health_tracker.mark_rotation_completed(result.old_domain, result.new_domain)
+                legacy._reload_cfmail_accounts_if_needed(force=True)
+                print(f"[cfmail] 域名轮换成功: {result.old_domain} -> {result.new_domain}")
+            else:
+                _health_tracker.mark_rotation_failed(domain, result.error)
+                print(f"[cfmail] 域名轮换失败: {result.error}")
+        except Exception as _rot_err:
+            _health_tracker.mark_rotation_failed(domain, str(_rot_err))
+            print(f"[cfmail] 域名轮换异常: {_rot_err}")
+        finally:
+            with _rotation_lock:
+                _rotation_in_progress[0] = False
+
     do_cleanup = cpa_cleanup if cpa_cleanup is not None else legacy.CPA_CLEANUP_ENABLED
     if do_cleanup and legacy.UPLOAD_API_URL:
         legacy._run_cpa_cleanup_before_register()
@@ -82,7 +138,7 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
             for future in done:
                 idx = active_futures.pop(future)
                 try:
-                    ok, _, err = future.result()
+                    ok, email, error_code, err = future.result()
                     if ok:
                         success_count += 1
                         since_last_upload += 1
@@ -93,6 +149,22 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                     else:
                         fail_count += 1
                         print(f"  [账号 {idx}] 失败: {err}")
+                    if _health_tracker is not None and email:
+                        attempt = make_domain_attempt(
+                            email=email,
+                            success=ok,
+                            error_message=err or "",
+                            error_code=error_code,
+                            proxy_key=proxy or "",
+                        )
+                        if attempt is not None:
+                            decision = _health_tracker.record(attempt)
+                            if decision.should_rotate:
+                                threading.Thread(
+                                    target=_try_rotate_domain,
+                                    args=(decision.domain, decision.reason),
+                                    daemon=True,
+                                ).start()
                 except Exception as error:
                     fail_count += 1
                     with legacy._print_lock:

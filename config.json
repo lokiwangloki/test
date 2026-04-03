@@ -36,5 +36,18 @@
   "upload_api_token_env": "UPLOAD_API_TOKEN",
   "upload_api_proxy": "direct",
   "cpa_cleanup_enabled": true,
-  "cpa_upload_every_n": 5
+  "cpa_upload_every_n": 5,
+  "_comment_cfmail_provisioning": "以下字段用于 cfmail 子域名自动创建/轮换，需配置 Cloudflare API 凭证",
+  "cf_auth_email": "",
+  "cf_auth_email_env": "CF_AUTH_EMAIL",
+  "cf_auth_key": "",
+  "cf_auth_key_env": "CF_AUTH_KEY",
+  "cf_account_id": "",
+  "cf_account_id_env": "CF_ACCOUNT_ID",
+  "cf_zone_id": "",
+  "cf_zone_id_env": "CF_ZONE_ID",
+  "cf_worker_name": "",
+  "cf_worker_name_env": "CF_WORKER_NAME",
+  "cf_zone_name": "",
+  "cf_zone_name_env": "CF_ZONE_NAME"
 }

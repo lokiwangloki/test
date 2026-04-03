@@ -7,6 +7,21 @@ from .email_services import build_mailbox_service, get_provider_candidates
 from .v2_flow import run_registration_v2
 
 
+_KNOWN_ERROR_CODES = frozenset({
+    "registration_disallowed",
+    "unsupported_email",
+    "user_already_exists",
+})
+
+
+def _extract_error_code(message: str) -> str:
+    msg = str(message or "").lower()
+    for code in _KNOWN_ERROR_CODES:
+        if code in msg:
+            return code
+    return ""
+
+
 @dataclass
 class RegistrationResult:
     idx: int
@@ -17,6 +32,7 @@ class RegistrationResult:
     chatgpt_password: str = ""
     oauth_ok: bool = False
     error_message: str = ""
+    error_code: str = ""
 
 
 class RegistrationEngine:
@@ -61,11 +77,13 @@ class RegistrationEngine:
 
     def run(self) -> RegistrationResult:
         provider = legacy.MAIL_PROVIDER
+        _email_on_failure = ""
         try:
             register_client = legacy.ChatGPTRegister(proxy=self.proxy, tag=f"{self.idx}")
             mailbox_service, mailbox, effective_provider = self._create_mailbox_with_fallback(
                 register_client, provider
             )
+            _email_on_failure = mailbox.email
             register_client.tag = mailbox.email.split("@")[0]
 
             chatgpt_password = legacy._generate_password()
@@ -136,5 +154,7 @@ class RegistrationEngine:
                 idx=self.idx,
                 success=False,
                 provider=provider,
+                email=_email_on_failure,
                 error_message=str(error),
+                error_code=_extract_error_code(str(error)),
             )
