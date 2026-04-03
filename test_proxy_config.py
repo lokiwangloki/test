@@ -503,6 +503,8 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         self.assertTrue(label.isalpha(), label)
         self.assertTrue(label.islower(), label)
+        self.assertGreaterEqual(len(label), 28, label)
+        self.assertLessEqual(len(label), 35, label)
 
     def test_cfmail_provisioner_recognizes_pure_letter_managed_domains(self):
         provisioner = __import__("ncs_runtime.cfmail_provisioner", fromlist=["CfmailProvisioner", "ProvisioningSettings"]).CfmailProvisioner(
@@ -518,6 +520,7 @@ class ProxyNormalizationTests(unittest.TestCase):
         )
 
         self.assertTrue(provisioner._is_managed_auto_domain("abcdefghijkl.example.com"))
+        self.assertTrue(provisioner._is_managed_auto_domain("abcdefghijklmnopqrstuvwxyzab.example.com"))
         self.assertTrue(provisioner._is_managed_auto_domain("auto-fresh.example.com"))
         self.assertFalse(provisioner._is_managed_auto_domain("mail.example.com"))
 

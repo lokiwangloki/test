@@ -18,7 +18,9 @@ MX_RECORDS = (
     ("route2.mx.cloudflare.net", 85),
     ("route3.mx.cloudflare.net", 36),
 )
-_MANAGED_LABEL_LENGTH = 12
+_LEGACY_MANAGED_LABEL_LENGTH = 12
+_MANAGED_LABEL_MIN_LENGTH = 28
+_MANAGED_LABEL_MAX_LENGTH = 35
 
 
 def _normalize_host(value: str) -> str:
@@ -202,7 +204,10 @@ class CfmailProvisioner:
                 raise RuntimeError(f"PATCH worker settings failed after {attempt + 1} attempts: {last_error}")
 
     def _make_new_label(self) -> str:
-        return "".join(secrets.choice(string.ascii_lowercase) for _ in range(_MANAGED_LABEL_LENGTH))
+        label_length = _MANAGED_LABEL_MIN_LENGTH + secrets.randbelow(
+            _MANAGED_LABEL_MAX_LENGTH - _MANAGED_LABEL_MIN_LENGTH + 1
+        )
+        return "".join(secrets.choice(string.ascii_lowercase) for _ in range(label_length))
 
     def _new_domain(self, label: str) -> str:
         return f"{label}.{self.settings.zone_name}"
@@ -284,7 +289,12 @@ class CfmailProvisioner:
             return False
         if label.startswith("auto"):
             return True
-        return len(label) == _MANAGED_LABEL_LENGTH and all(char in string.ascii_lowercase for char in label)
+        if not all(char in string.ascii_lowercase for char in label):
+            return False
+        label_length = len(label)
+        return label_length == _LEGACY_MANAGED_LABEL_LENGTH or (
+            _MANAGED_LABEL_MIN_LENGTH <= label_length <= _MANAGED_LABEL_MAX_LENGTH
+        )
 
     def _delete_domain_artifacts(self, domain: str) -> None:
         domain_key = str(domain or "").strip().lower()
