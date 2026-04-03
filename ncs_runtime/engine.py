@@ -103,10 +103,17 @@ class RegistrationEngine:
             # ===== 使用 protocol_keygen 的纯 HTTP 注册流程 =====
             from protocol_keygen import (
                 ProtocolRegistrar, create_session, perform_codex_oauth_login_http,
-                save_tokens, save_account, create_temp_email,
+                save_tokens, save_account, create_temp_email, PROXY,
+            )
+            from sentinel_browser import get_all_sentinel_tokens
+
+            # 一次启动 Playwright 批量生成所有 flow 的 sentinel token
+            register_client._print("[Playwright] 批量生成 sentinel token...")
+            browser_tokens = get_all_sentinel_tokens(
+                proxy=PROXY if PROXY else None,
             )
 
-            registrar = ProtocolRegistrar()
+            registrar = ProtocolRegistrar(browser_tokens=browser_tokens)
             otp_fetcher = mailbox_service.wait_for_verification_code
 
             register_client._print("[Protocol] 步骤0: OAuth 初始化 + 邮箱提交")

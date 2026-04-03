@@ -1,120 +1,102 @@
 """
-Sentinel Token 浏览器辅助生成器 v3
-通过 Playwright 加载 auth.openai.com 页面，拦截 sentinel token 的网络请求/响应。
-
-核心思路：不去 postMessage，而是让 SDK 自然运行，
-拦截它发出的 /backend-api/sentinel/req 请求和对 create_account 的 openai-sentinel-token 头。
+Sentinel Token 浏览器批量生成器
+通过 Playwright 加载 sentinel frame 页面，调用 SentinelSDK 批量生成所有 flow 的 token。
+一次启动浏览器，生成 authorize_continue / username_password_create / oauth_create_account 等全部 token。
 """
 import json
 import time
 from playwright.sync_api import sync_playwright
 
+DEFAULT_FLOWS = [
+    "authorize_continue",
+    "username_password_create",
+    "email_otp_validate",
+    "password_verify",
+    "oauth_create_account",
+]
 
-def get_sentinel_token_via_browser(flow="oauth_create_account", proxy=None, timeout_ms=45000):
+FRAME_URL = "https://sentinel.openai.com/backend-api/sentinel/frame.html?sv=20260219f9f6"
+
+
+def get_all_sentinel_tokens(flows=None, proxy=None, timeout_ms=60000):
     """
-    通过 Playwright 无头浏览器获取完整的 sentinel token。
-    
-    方案：在页面上执行 JavaScript 调用 SentinelSDK.token(flow)，
-    该调用会自动完成 PoW + Turnstile VM，返回最终可用的 JSON 字符串。
-    
+    一次启动 Playwright，批量生成所有 flow 的 sentinel token。
+
     返回:
-        str: openai-sentinel-token 头的值（JSON 字符串），失败返回 None
+        dict: {flow_name: token_json_string, ...}，失败的 flow 值为 None
     """
-    print(f"  🌐 [Browser] 启动 Playwright (flow={flow})...")
+    flows = flows or DEFAULT_FLOWS
+    print(f"  [Browser] 批量生成 sentinel token: {', '.join(flows)}")
     t_start = time.time()
-    
+
     with sync_playwright() as p:
         launch_args = {
             "headless": True,
-            "args": [
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-            ],
+            "args": ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
         }
         if proxy:
             launch_args["proxy"] = {"server": proxy}
-        
+
         browser = p.chromium.launch(**launch_args)
-        
         try:
             context = browser.new_context(
-                viewport={"width": 1920, "height": 1080},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.7103.92 Safari/537.36",
-                ignore_https_errors=True,
+                locale="en-US",
+                viewport={"width": 1920, "height": 1080},
             )
             page = context.new_page()
-            
-            # 导航到 auth 页面
-            page.goto("https://auth.openai.com/about-you", wait_until="domcontentloaded", timeout=timeout_ms)
-            elapsed_nav = time.time() - t_start
-            print(f"  🌐 [Browser] 页面加载完成 ({elapsed_nav:.1f}s)")
-            
-            # 等待 sentinel SDK 加载完成（监测全局 SentinelSDK 对象）
-            page.wait_for_function(
-                "() => typeof window.SentinelSDK !== 'undefined' && typeof window.SentinelSDK.token === 'function'",
-                timeout=15000,
-            )
-            print(f"  🌐 [Browser] SentinelSDK 已加载")
-            
-            # 调用 SentinelSDK.token(flow) 获取完整 token
-            result = page.evaluate("""
-                async (flow) => {
-                    try {
-                        const token = await window.SentinelSDK.token(flow);
-                        return { success: true, token: token };
-                    } catch (e) {
-                        return { success: false, error: e.message || String(e) };
+            page.goto(FRAME_URL, wait_until="load", timeout=timeout_ms)
+            page.wait_for_timeout(8000)
+            page.wait_for_function("() => !!window.SentinelSDK", timeout=30000)
+            elapsed_load = time.time() - t_start
+            print(f"  [Browser] SentinelSDK 已加载 ({elapsed_load:.1f}s)")
+
+            result = page.evaluate(
+                """async (flows) => {
+                    const out = {};
+                    if (!window.SentinelSDK) throw new Error('SentinelSDK missing');
+                    for (const flow of flows) {
+                        try {
+                            await window.SentinelSDK.init(flow);
+                            const tok = await window.SentinelSDK.token(flow);
+                            out[flow] = tok || null;
+                        } catch (e) {
+                            out[flow] = null;
+                        }
                     }
-                }
-            """, flow)
-            
+                    return out;
+                }""",
+                flows,
+            )
+
             elapsed = time.time() - t_start
-            
-            if result and result.get("success") and result.get("token"):
-                token = result["token"]
-                # 验证 token 结构
-                try:
-                    parsed = json.loads(token)
-                    has_p = bool(parsed.get("p"))
-                    has_t = bool(parsed.get("t"))
-                    has_c = bool(parsed.get("c"))
-                    print(f"  🌐 [Browser] ✅ 成功 ({elapsed:.1f}s) | p:{'✓' if has_p else '✗'} t:{'✓' if has_t else '✗'} c:{'✓' if has_c else '✗'}")
-                    return token
-                except json.JSONDecodeError:
-                    # 可能不是 JSON，但仍然是有效 token
-                    print(f"  🌐 [Browser] ✅ 成功 ({elapsed:.1f}s) | 长度:{len(token)}")
-                    return token
-            else:
-                error = result.get("error", "unknown") if result else "no result"
-                print(f"  🌐 [Browser] ❌ SDK 调用失败 ({elapsed:.1f}s): {error}")
-                return None
-            
+            tokens = {}
+            for flow in flows:
+                tok = result.get(flow) if result else None
+                if tok:
+                    try:
+                        parsed = json.loads(tok)
+                        has_t = bool(parsed.get("t"))
+                        print(f"  [Browser] {flow}: OK (t:{'Y' if has_t else 'N'})")
+                    except Exception:
+                        print(f"  [Browser] {flow}: OK (len={len(tok)})")
+                    tokens[flow] = tok
+                else:
+                    print(f"  [Browser] {flow}: FAIL")
+                    tokens[flow] = None
+
+            print(f"  [Browser] 批量完成 ({elapsed:.1f}s)")
+            return tokens
+
         except Exception as e:
             elapsed = time.time() - t_start
-            print(f"  🌐 [Browser] ❌ 异常 ({elapsed:.1f}s): {e}")
-            return None
+            print(f"  [Browser] 异常 ({elapsed:.1f}s): {e}")
+            return {f: None for f in flows}
         finally:
             browser.close()
 
 
-if __name__ == "__main__":
-    import sys
-    proxy = "http://127.0.0.1:7897"
-    flow = sys.argv[1] if len(sys.argv) > 1 else "oauth_create_account"
-    
-    print(f"测试 sentinel token (flow={flow})\n")
-    
-    token = get_sentinel_token_via_browser(flow=flow, proxy=proxy, timeout_ms=45000)
-    if token:
-        print(f"\n✅ 成功！长度: {len(token)}")
-        try:
-            parsed = json.loads(token)
-            for k, v in parsed.items():
-                val = str(v)
-                if len(val) > 100:
-                    val = val[:100] + "..."
-                print(f"  {k}: {val}")
-        except:
-            print(f"  前200字符: {token[:200]}")
-    else:
-        print("\n❌ 失败")
+def get_sentinel_token_via_browser(flow="oauth_create_account", proxy=None, timeout_ms=45000):
+    """单个 flow 的兼容接口"""
+    tokens = get_all_sentinel_tokens(flows=[flow], proxy=proxy, timeout_ms=timeout_ms)
+    return tokens.get(flow)

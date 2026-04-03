@@ -678,13 +678,21 @@ class ProtocolRegistrar:
       步骤5:   创建账号         → POST /api/accounts/create_account
     """
 
-    def __init__(self):
+    def __init__(self, browser_tokens=None):
         # HTTP 会话（全流程纯 HTTP，cookies 通过 302 跟随自动累积）
         self.session = create_session()
         self.device_id = generate_device_id()
         self.sentinel_gen = SentinelTokenGenerator(device_id=self.device_id)
         self.code_verifier = None
         self.state = None
+        # Playwright 预生成的 sentinel token 缓存（一次启动浏览器批量生成所有 flow）
+        self._browser_tokens = browser_tokens or {}
+
+    def _get_sentinel_token(self, flow):
+        """获取 sentinel token：优先 Playwright 预生成，fallback 纯 HTTP PoW"""
+        if flow in self._browser_tokens and self._browser_tokens[flow]:
+            return self._browser_tokens[flow]
+        return build_sentinel_token(self.session, self.device_id, flow=flow)
 
     def _build_headers(self, referer, with_sentinel=False):
         """
@@ -793,7 +801,7 @@ class ProtocolRegistrar:
         headers.update(generate_datadog_trace())
 
         # 获取 authorize_continue 的 sentinel token
-        sentinel_token = build_sentinel_token(self.session, self.device_id, flow="authorize_continue")
+        sentinel_token = self._get_sentinel_token("authorize_continue")
         if not sentinel_token:
             print("  ❌ 无法获取 authorize_continue 的 sentinel token")
             return False
@@ -856,7 +864,7 @@ class ProtocolRegistrar:
             referer=f"{OPENAI_AUTH_BASE}/create-account/password",
         )
         # 通过 sentinel API 获取完整 PoW token（含服务端 challenge c 字段）
-        sentinel_token = build_sentinel_token(self.session, self.device_id, flow="username_password_create")
+        sentinel_token = self._get_sentinel_token("username_password_create")
         if sentinel_token:
             headers["openai-sentinel-token"] = sentinel_token
         else:
@@ -928,7 +936,7 @@ class ProtocolRegistrar:
             referer=f"{OPENAI_AUTH_BASE}/email-verification",
         )
         # 获取 sentinel PoW token（validate OTP 也需要）
-        sentinel_token = build_sentinel_token(self.session, self.device_id, flow="email_otp_validate")
+        sentinel_token = self._get_sentinel_token("email_otp_validate")
         if sentinel_token:
             headers["openai-sentinel-token"] = sentinel_token
         payload = {"code": code}
@@ -958,23 +966,8 @@ class ProtocolRegistrar:
             referer=f"{OPENAI_AUTH_BASE}/about-you",
         )
 
-        # ===== 获取 sentinel token（优先浏览器方式，含完整 Turnstile t 字段） =====
-        sentinel_token = None
-        try:
-            from sentinel_browser import get_sentinel_token_via_browser
-            sentinel_token = get_sentinel_token_via_browser(
-                flow="oauth_create_account",
-                proxy=PROXY if PROXY else None,
-                timeout_ms=45000,
-            )
-        except Exception as e:
-            print(f"  ⚠️ 浏览器方式异常: {e}")
-        
-        if not sentinel_token:
-            print("  ⚠️ 浏览器获取失败，回退纯 HTTP PoW...")
-            sentinel_token = build_sentinel_token(
-                self.session, self.device_id, flow="oauth_create_account"
-            )
+        # ===== 获取 sentinel token（优先 Playwright 预生成，fallback 纯 HTTP PoW） =====
+        sentinel_token = self._get_sentinel_token("oauth_create_account")
         
         if sentinel_token:
             headers["openai-sentinel-token"] = sentinel_token
@@ -998,14 +991,19 @@ class ProtocolRegistrar:
             or "registration_disallowed" in resp.text.lower()
         ):
             print(f"  ⚠️ sentinel 校验失败 ({resp.status_code})，重新获取 token 重试...")
-            # 重新获取 sentinel token 重试
-            retry_token = build_sentinel_token(
-                self.session, self.device_id, flow="oauth_create_account"
-            )
+            # 重新获取 sentinel token 重试（强制用 Playwright）
+            retry_token = None
+            try:
+                from sentinel_browser import get_sentinel_token_via_browser
+                retry_token = get_sentinel_token_via_browser(
+                    flow="oauth_create_account", proxy=PROXY if PROXY else None, timeout_ms=45000)
+            except Exception:
+                pass
+            if not retry_token:
+                retry_token = build_sentinel_token(self.session, self.device_id, flow="oauth_create_account")
             if retry_token:
                 headers["openai-sentinel-token"] = retry_token
             else:
-                # 退化为本地生成的 token
                 headers["openai-sentinel-token"] = self.sentinel_gen.generate_token()
             resp = self.session.post(url, json=payload, headers=headers, verify=False, timeout=30)
             if resp.status_code == 200:
