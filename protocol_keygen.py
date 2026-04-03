@@ -746,6 +746,80 @@ def _get_session_cookie_value(session_obj, cookie_name):
     return ""
 
 
+def _bootstrap_login_session_via_browser(
+    session_obj,
+    authorize_url,
+    *,
+    user_agent="",
+    proxy="",
+    timeout_ms=45000,
+):
+    result = {
+        "success": False,
+        "final_url": "",
+        "cookie_count": 0,
+        "error": "",
+    }
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:
+        result["error"] = f"playwright import failed: {exc}"
+        return result
+
+    launch_args = {
+        "headless": True,
+        "args": ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+    }
+    if proxy:
+        launch_args["proxy"] = {"server": proxy}
+
+    oai_did = _get_session_cookie_value(session_obj, "oai-did")
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(**launch_args)
+        try:
+            context = browser.new_context(
+                user_agent=user_agent or USER_AGENT,
+                locale="en-US",
+                viewport={"width": 1920, "height": 1080},
+                ignore_https_errors=True,
+            )
+            if oai_did:
+                context.add_cookies(
+                    [
+                        {
+                            "name": "oai-did",
+                            "value": oai_did,
+                            "url": OPENAI_AUTH_BASE,
+                        }
+                    ]
+                )
+            page = context.new_page()
+            page.goto(authorize_url, wait_until="domcontentloaded", timeout=timeout_ms)
+            page.wait_for_timeout(3000)
+            result["final_url"] = str(page.url or "").strip()
+
+            cookie_count = 0
+            for cookie in context.cookies():
+                name = str(cookie.get("name") or "").strip()
+                value = str(cookie.get("value") or "")
+                domain = str(cookie.get("domain") or "").strip()
+                if not name:
+                    continue
+                session_obj.cookies.set(name, value, domain=domain)
+                cookie_count += 1
+            result["cookie_count"] = cookie_count
+            result["success"] = bool(_get_session_cookie_value(session_obj, "login_session"))
+            if not result["success"]:
+                result["error"] = "login_session missing after browser bootstrap"
+        except Exception as exc:
+            result["error"] = str(exc)
+        finally:
+            browser.close()
+
+    return result
+
+
 def _decode_oauth_session_cookie(session_obj):
     raw_value = _get_session_cookie_value(session_obj, "oai-client-auth-session")
     if not raw_value:
@@ -1188,10 +1262,30 @@ class ProtocolRegistrar:
         has_login_session = "login_session" in self.session.cookies
         print(f"  login_session: {'✅ 已获取' if has_login_session else '❌ 未获取'}")
         if not has_login_session:
-            print("  ⚠️ 未获得 login_session cookie，后续步骤可能失败")
+            print("  ⚠️ 未获得 login_session cookie，尝试浏览器兜底...")
+            if resp.status_code >= 400:
+                print(f"  OAuth 授权响应: HTTP {resp.status_code}")
             # 打印响应内容片段用于诊断
             print(f"  响应预览: {resp.text[:300]}")
-            return False
+            browser_bootstrap = _bootstrap_login_session_via_browser(
+                self.session,
+                authorize_url,
+                user_agent=COMMON_HEADERS.get("user-agent", "") or USER_AGENT,
+                proxy=PROXY if PROXY else "",
+                timeout_ms=45000,
+            )
+            if browser_bootstrap.get("success"):
+                has_login_session = "login_session" in self.session.cookies
+                final_url = str(browser_bootstrap.get("final_url") or "").strip()
+                cookie_count = int(browser_bootstrap.get("cookie_count") or 0)
+                print(
+                    "  浏览器兜底: ✅ 已获取 login_session"
+                    f" (cookies={cookie_count}, final_url={final_url or '-'})"
+                )
+            else:
+                detail = str(browser_bootstrap.get("error") or "未知错误").strip() or "未知错误"
+                print(f"  浏览器兜底失败: {detail}")
+                return False
 
 
 

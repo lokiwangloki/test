@@ -37,6 +37,8 @@ _DIAGNOSTIC_REASON_MARKERS = (
     "未获得 login_session",
     "login_session: ❌",
     "login_session: n",
+    "浏览器兜底失败",
+    "browser bootstrap failed",
 )
 _GENERIC_FAILURE_FRAGMENTS = (
     "oauth token 获取失败",
