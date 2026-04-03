@@ -1,6 +1,7 @@
 import unittest
 import sys
 import types
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -291,6 +292,36 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(len(accounts), 1)
         self.assertEqual(accounts[0].worker_domain, "tmpemail.lokiw.dpdns.org")
         self.assertEqual(accounts[0].email_domain, "wocaoniubi.lokiw.dpdns.org")
+
+    def test_normalize_to_domain_pool_keeps_worker_active_domain(self):
+        config_path = Path("/tmp/test_cfmail_accounts.json")
+        config_path.write_text(
+            '{"accounts":[{"name":"fresh","worker_domain":"worker.example.com","email_domain":"auto-fresh.example.com","admin_password":"pw","enabled":true},{"name":"stale","worker_domain":"worker.example.com","email_domain":"auto-stale.example.com","admin_password":"pw","enabled":true}]}\n',
+            encoding="utf-8",
+        )
+
+        provisioner = __import__("ncs_runtime.cfmail_provisioner", fromlist=["CfmailProvisioner", "ProvisioningSettings"]).CfmailProvisioner(
+            config_path=config_path,
+            settings=__import__("ncs_runtime.cfmail_provisioner", fromlist=["ProvisioningSettings"]).ProvisioningSettings(
+                auth_email="a",
+                auth_key="b",
+                account_id="c",
+                zone_id="d",
+                worker_name="w",
+                zone_name="example.com",
+            ),
+        )
+
+        with mock.patch.object(provisioner, "current_active_domains", return_value=["auto-fresh.example.com"]):
+            with mock.patch.object(provisioner, "_set_worker_domains"):
+                with mock.patch.object(provisioner, "_delete_domain_artifacts"):
+                    result = provisioner.normalize_to_domain_pool(1)
+
+        self.assertEqual(result["active_domains"], ["auto-fresh.example.com"])
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+        accounts = payload["accounts"]
+        self.assertEqual(len(accounts), 1)
+        self.assertEqual(accounts[0]["email_domain"], "auto-fresh.example.com")
 
     def test_wildmail_service_creates_mailbox_via_register_client(self):
         register_client = mock.Mock()

@@ -601,7 +601,19 @@ class CfmailProvisioner:
                 changed = True
                 self._write_accounts(accounts)
         if len(enabled_accounts) > desired:
-            for item in enabled_accounts[:-desired]:
+            active_binding_domains = set(self.current_active_domains())
+            active_binding_domain = next(iter(active_binding_domains), "")
+            # Prefer retiring domains that are not currently active in the worker binding.
+            # This avoids deleting the freshly switched domain when stale enabled entries remain
+            # in the local cache file after skipped smoke-test rotations.
+            retire_candidates = sorted(
+                enabled_accounts,
+                key=lambda item: (
+                    self._normalize_domain_name(str(item.get("email_domain") or "")) in active_binding_domains,
+                    str(item.get("email_domain") or "").strip().lower() == active_binding_domain,
+                ),
+            )
+            for item in retire_candidates[:-desired]:
                 domain = self._normalize_domain_name(str(item.get("email_domain") or ""))
                 if not domain:
                     continue

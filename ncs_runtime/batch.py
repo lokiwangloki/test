@@ -97,12 +97,19 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                 print(f"[cfmail] 随机子域名已创建: {_rot.new_domain}")
                 print("[cfmail] 等待 90 秒让 CF Workers 绑定生效...")
                 time.sleep(90)
+                _pool = _provisioner.normalize_to_domain_pool(1)
+                _active_domains = list(_pool.get("active_domains") or [])
+                print(f"[cfmail] Worker 当前激活域名: {', '.join(_active_domains) if _active_domains else '无'}")
                 # 重新加载账号
                 legacy._reload_cfmail_accounts_if_needed(force=True)
-                # 优先使用 auto 随机子域名账号，保留 default 作为 fallback
-                _auto_accounts = [a for a in legacy.CFMAIL_ACCOUNTS if a.email_domain.startswith("auto")]
-                if _auto_accounts:
-                    print(f"[cfmail] 注册将使用随机子域名: {', '.join(a.email_domain for a in _auto_accounts)}")
+                # 仅保留当前 worker 实际激活的 auto 域名，避免旧失效域名继续参与轮询
+                _active_auto_accounts = [
+                    a for a in legacy.CFMAIL_ACCOUNTS
+                    if a.email_domain.startswith("auto") and a.email_domain in _active_domains
+                ]
+                if _active_auto_accounts:
+                    legacy.CFMAIL_ACCOUNTS = _active_auto_accounts
+                    print(f"[cfmail] 注册将使用随机子域名: {', '.join(a.email_domain for a in _active_auto_accounts)}")
                 else:
                     print(f"[cfmail] 使用现有账号: {', '.join(a.email_domain for a in legacy.CFMAIL_ACCOUNTS)}")
             else:
@@ -130,10 +137,16 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                 print(f"[cfmail] 域名轮换成功: {result.old_domain} -> {result.new_domain}")
                 print("[cfmail] 等待 60 秒让 CF Workers 绑定生效...")
                 time.sleep(60)
+                _pool = _provisioner.normalize_to_domain_pool(1)
+                _active_domains = list(_pool.get("active_domains") or [])
+                print(f"[cfmail] Worker 当前激活域名: {', '.join(_active_domains) if _active_domains else '无'}")
                 legacy._reload_cfmail_accounts_if_needed(force=True)
-                _auto_accounts = [a for a in legacy.CFMAIL_ACCOUNTS if a.email_domain.startswith("auto")]
-                if _auto_accounts:
-                    legacy.CFMAIL_ACCOUNTS = _auto_accounts
+                _active_auto_accounts = [
+                    a for a in legacy.CFMAIL_ACCOUNTS
+                    if a.email_domain.startswith("auto") and a.email_domain in _active_domains
+                ]
+                if _active_auto_accounts:
+                    legacy.CFMAIL_ACCOUNTS = _active_auto_accounts
             else:
                 print(f"[cfmail] 域名轮换失败: {result.error}")
         except Exception as _rot_err:
