@@ -2627,6 +2627,102 @@ class ChatGPTRegister:
 
     # ==================== 自动注册主流程 ====================
 
+    def _init_oauth_session_with_retry(self, email):
+        """步骤0: 直连 auth.openai.com PKCE 初始化 + authorize/continue（带 403 重试）"""
+        nav_headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "User-Agent": self.ua, "sec-ch-ua": self.sec_ch_ua,
+            "sec-ch-ua-mobile": "?0", "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "document", "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "same-origin", "sec-fetch-user": "?1",
+            "Upgrade-Insecure-Requests": "1",
+        }
+        self.session.cookies.set("oai-did", self.device_id, domain=".auth.openai.com")
+        self.session.cookies.set("oai-did", self.device_id, domain="auth.openai.com")
+
+        code_verifier, code_challenge = _generate_pkce()
+        state = secrets.token_urlsafe(32)
+        authorize_params = {
+            "response_type": "code", "client_id": OAUTH_CLIENT_ID,
+            "redirect_uri": OAUTH_REDIRECT_URI,
+            "scope": "openid profile email offline_access",
+            "code_challenge": code_challenge, "code_challenge_method": "S256",
+            "state": state, "screen_hint": "signup", "prompt": "login",
+        }
+        authorize_url = f"{self.AUTH}/oauth/authorize?{urlencode(authorize_params)}"
+
+        # GET /oauth/authorize 带 403 重试（参考 codex oauth loop）
+        has_login = False
+        for attempt in range(4):
+            if attempt > 0:
+                backoff = 3 * (2 ** (attempt - 1)) + random.uniform(1, 3)
+                self._print(f"[步骤0] 第{attempt}次重试，等待 {backoff:.1f}s...")
+                time.sleep(backoff)
+                imp, _major, _full, ua, sec_ch_ua = _random_chrome_version()
+                self.session = curl_requests.Session(impersonate=imp)
+                if self.proxy:
+                    self.session.proxies = {"http": self.proxy, "https": self.proxy}
+                self.ua = ua
+                self.sec_ch_ua = sec_ch_ua
+                self.impersonate = imp
+                self.session.cookies.set("oai-did", self.device_id, domain=".auth.openai.com")
+                self.session.cookies.set("oai-did", self.device_id, domain="auth.openai.com")
+                nav_headers["User-Agent"] = ua
+                nav_headers["sec-ch-ua"] = sec_ch_ua
+
+            try:
+                resp = self.session.get(authorize_url, headers=nav_headers,
+                                        allow_redirects=True, timeout=30, impersonate=self.impersonate)
+            except Exception as e:
+                self._print(f"[步骤0] 请求异常: {e}")
+                if attempt < 3:
+                    continue
+                raise Exception(f"OAuth 初始化失败: {e}")
+
+            if resp.status_code == 403:
+                self._print(f"[步骤0] CF 403 拦截")
+                if attempt < 3:
+                    continue
+                raise Exception("OAuth 初始化失败: 403 重试耗尽")
+
+            has_login = any(getattr(c, "name", "") == "login_session" for c in self.session.cookies)
+            if has_login:
+                break
+            # status=200 但没 login_session，也重试
+            self._print(f"[步骤0] status={resp.status_code} 但无 login_session")
+            if attempt < 3:
+                continue
+            raise Exception(f"OAuth 初始化失败: 未获得 login_session (status={resp.status_code})")
+
+        self._print("[步骤0] login_session 已获取")
+
+        # POST authorize/continue
+        sentinel_ac = build_sentinel_token(self.session, self.device_id, flow="authorize_continue",
+                                           user_agent=self.ua, sec_ch_ua=self.sec_ch_ua,
+                                           impersonate=self.impersonate)
+        if not sentinel_ac:
+            raise Exception("sentinel token (authorize_continue) 生成失败")
+
+        h_ac = {
+            "Accept": "application/json", "Content-Type": "application/json",
+            "Origin": self.AUTH, "Referer": f"{self.AUTH}/create-account",
+            "User-Agent": self.ua, "oai-device-id": self.device_id,
+            "sec-ch-ua": self.sec_ch_ua, "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty", "sec-fetch-mode": "cors", "sec-fetch-site": "same-origin",
+            "openai-sentinel-token": sentinel_ac,
+        }
+        h_ac.update(_make_trace_headers())
+        resp = self.session.post(
+            f"{self.AUTH}/api/accounts/authorize/continue",
+            json={"username": {"kind": "email", "value": email}, "screen_hint": "signup"},
+            headers=h_ac, timeout=30, impersonate=self.impersonate,
+        )
+        if resp.status_code != 200:
+            raise Exception(f"authorize/continue 失败: {resp.status_code} {resp.text[:200]}")
+        self._print("[步骤0] 邮箱已提交")
+
     def run_register(
         self,
         email,
@@ -2637,143 +2733,105 @@ class ChatGPTRegister:
         provider="duckmail",
         otp_fetcher: Optional[Callable[[int], Optional[str]]] = None,
     ):
-        """注册流程：chatgpt.com 入口 + sentinel token（参考 codex oauth loop）"""
-        self.visit_homepage()
-        _random_delay(0.3, 0.8)
-        csrf = self.get_csrf()
-        _random_delay(0.2, 0.5)
-        auth_url = self.signin(email, csrf)
-        _random_delay(0.3, 0.8)
-        final_url = self.authorize(auth_url)
-        parsed_final = urlparse(final_url)
-        final_path = parsed_final.path
-        final_host = str(parsed_final.hostname or "").strip().lower()
-        _random_delay(0.3, 0.8)
-        self._print(f"Authorize → {final_path}")
+        """注册流程（直连 auth.openai.com PKCE + sentinel，参考 codex oauth loop）"""
+        # 步骤0: OAuth 初始化 + 邮箱提交
+        self._print("[步骤0] OAuth 会话初始化")
+        self._init_oauth_session_with_retry(email)
+        _random_delay(0.5, 1.0)
 
-        need_otp = False
-
-        if "create-account/password" in final_path:
-            self._print("全新注册流程")
-            _random_delay(0.5, 1.0)
-            # 带 sentinel token 注册
-            sentinel_reg = build_sentinel_token(
-                self.session, self.device_id, flow="username_password_create",
-                user_agent=self.ua, sec_ch_ua=self.sec_ch_ua, impersonate=self.impersonate,
-            )
-            url = f"{self.AUTH}/api/accounts/user/register"
-            headers = {"Content-Type": "application/json", "Accept": "application/json",
-                        "Referer": f"{self.AUTH}/create-account/password", "Origin": self.AUTH,
-                        "User-Agent": self.ua, "oai-device-id": self.device_id}
-            headers.update(_make_trace_headers())
-            if sentinel_reg:
-                headers["openai-sentinel-token"] = sentinel_reg
-            r = self.session.post(url, json={"username": email, "password": password},
-                                  headers=headers, impersonate=self.impersonate)
-            self._log("Register", "POST", url, r.status_code)
-            if r.status_code != 200 and r.status_code not in (301, 302):
+        # 步骤2: 注册用户
+        self._print("[步骤2] 注册用户")
+        sentinel_reg = build_sentinel_token(self.session, self.device_id, flow="username_password_create",
+                                            user_agent=self.ua, sec_ch_ua=self.sec_ch_ua,
+                                            impersonate=self.impersonate)
+        h_reg = {
+            "Accept": "application/json", "Content-Type": "application/json",
+            "Origin": self.AUTH, "Referer": f"{self.AUTH}/create-account/password",
+            "User-Agent": self.ua, "oai-device-id": self.device_id,
+            "sec-ch-ua": self.sec_ch_ua, "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty", "sec-fetch-mode": "cors", "sec-fetch-site": "same-origin",
+        }
+        h_reg.update(_make_trace_headers())
+        if sentinel_reg:
+            h_reg["openai-sentinel-token"] = sentinel_reg
+        r = self.session.post(f"{self.AUTH}/api/accounts/user/register",
+                              json={"username": email, "password": password},
+                              headers=h_reg, timeout=30, impersonate=self.impersonate)
+        if r.status_code != 200:
+            if r.status_code in (301, 302):
+                loc = r.headers.get("Location", "")
+                if not ("email-otp" in loc or "email-verification" in loc):
+                    raise Exception(f"Register 失败 ({r.status_code}): {loc}")
+            else:
                 raise Exception(f"Register 失败 ({r.status_code}): {r.text[:300]}")
-            _random_delay(0.3, 0.8)
-            self.send_otp()
-            need_otp = True
-        elif "email-verification" in final_path or "email-otp" in final_path:
-            self._print("跳到 OTP 验证阶段")
-            try:
-                self.send_otp()
-            except Exception as e:
-                self._print(f"[OTP] 补发验证码异常，继续等待已有邮件: {e}")
-            need_otp = True
-        elif "about-you" in final_path:
-            self._print("跳到填写信息阶段")
-            _random_delay(0.5, 1.0)
-            self._create_account_with_sentinel(name, birthdate)
-            _random_delay(0.3, 0.5)
-            self.callback()
-            return True
-        elif "callback" in final_path or final_host.endswith("chatgpt.com"):
-            self._print("账号已完成注册")
-            return True
-        else:
-            self._print(f"未知跳转: {final_url}")
-            # 带 sentinel 注册
-            sentinel_reg = build_sentinel_token(
-                self.session, self.device_id, flow="username_password_create",
-                user_agent=self.ua, sec_ch_ua=self.sec_ch_ua, impersonate=self.impersonate,
-            )
-            url = f"{self.AUTH}/api/accounts/user/register"
-            headers = {"Content-Type": "application/json", "Accept": "application/json",
-                        "Referer": f"{self.AUTH}/create-account/password", "Origin": self.AUTH,
-                        "User-Agent": self.ua, "oai-device-id": self.device_id}
-            headers.update(_make_trace_headers())
-            if sentinel_reg:
-                headers["openai-sentinel-token"] = sentinel_reg
-            self.session.post(url, json={"username": email, "password": password},
-                              headers=headers, impersonate=self.impersonate)
-            self.send_otp()
-            need_otp = True
+        self._print("[步骤2] 注册成功")
+        _random_delay(0.5, 1.0)
 
-        if need_otp:
-            otp_code = (
-                otp_fetcher(120)
-                if otp_fetcher is not None
-                else self.wait_for_verification_email(
-                    mail_token, timeout=120, email=email, provider=provider
-                )
+        # 步骤3: 触发 OTP
+        self._print("[步骤3] 触发 OTP")
+        self.send_otp()
+
+        # 等待验证码
+        otp_code = (
+            otp_fetcher(120)
+            if otp_fetcher is not None
+            else self.wait_for_verification_email(
+                mail_token, timeout=120, email=email, provider=provider
             )
+        )
+        if not otp_code:
+            raise Exception("未能获取验证码")
+
+        # 步骤4: 验证 OTP
+        self._print(f"[步骤4] 验证 OTP")
+        sentinel_otp = build_sentinel_token(self.session, self.device_id, flow="email_otp_validate",
+                                            user_agent=self.ua, sec_ch_ua=self.sec_ch_ua,
+                                            impersonate=self.impersonate)
+        h_otp = {
+            "Accept": "application/json", "Content-Type": "application/json",
+            "Origin": self.AUTH, "Referer": f"{self.AUTH}/email-verification",
+            "User-Agent": self.ua, "oai-device-id": self.device_id,
+            "sec-ch-ua": self.sec_ch_ua, "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty", "sec-fetch-mode": "cors", "sec-fetch-site": "same-origin",
+        }
+        h_otp.update(_make_trace_headers())
+        if sentinel_otp:
+            h_otp["openai-sentinel-token"] = sentinel_otp
+        r = self.session.post(f"{self.AUTH}/api/accounts/email-otp/validate",
+                              json={"code": otp_code}, headers=h_otp,
+                              timeout=30, impersonate=self.impersonate)
+        if r.status_code != 200:
+            self._print(f"[步骤4] OTP 失败 ({r.status_code})，重试...")
+            self.send_otp()
+            _random_delay(1.0, 2.0)
+            otp_code = (otp_fetcher(60) if otp_fetcher is not None
+                        else self.wait_for_verification_email(mail_token, timeout=60, email=email, provider=provider))
             if not otp_code:
-                raise Exception("未能获取验证码")
-
-            _random_delay(0.3, 0.8)
-            # 带 sentinel token 验证 OTP
-            sentinel_otp = build_sentinel_token(
-                self.session, self.device_id, flow="email_otp_validate",
-                user_agent=self.ua, sec_ch_ua=self.sec_ch_ua, impersonate=self.impersonate,
-            )
-            url = f"{self.AUTH}/api/accounts/email-otp/validate"
-            headers = {"Content-Type": "application/json", "Accept": "application/json",
-                        "Referer": f"{self.AUTH}/email-verification", "Origin": self.AUTH,
-                        "User-Agent": self.ua, "oai-device-id": self.device_id}
-            headers.update(_make_trace_headers())
+                raise Exception("重试后仍未获取验证码")
+            sentinel_otp = build_sentinel_token(self.session, self.device_id, flow="email_otp_validate",
+                                                user_agent=self.ua, sec_ch_ua=self.sec_ch_ua,
+                                                impersonate=self.impersonate)
+            h_otp2 = dict(h_otp)
+            h_otp2.update(_make_trace_headers())
             if sentinel_otp:
-                headers["openai-sentinel-token"] = sentinel_otp
-            r = self.session.post(url, json={"code": otp_code}, headers=headers,
-                                  impersonate=self.impersonate)
-            status = r.status_code
-            if status != 200:
-                self._print(f"验证码失败 ({status})，重试...")
-                self.send_otp()
-                _random_delay(1.0, 2.0)
-                otp_code = (
-                    otp_fetcher(60)
-                    if otp_fetcher is not None
-                    else self.wait_for_verification_email(
-                        mail_token, timeout=60, email=email, provider=provider
-                    )
-                )
-                if not otp_code:
-                    raise Exception("重试后仍未获取验证码")
-                _random_delay(0.3, 0.8)
-                sentinel_otp = build_sentinel_token(
-                    self.session, self.device_id, flow="email_otp_validate",
-                    user_agent=self.ua, sec_ch_ua=self.sec_ch_ua, impersonate=self.impersonate,
-                )
-                headers2 = dict(headers)
-                headers2.update(_make_trace_headers())
-                if sentinel_otp:
-                    headers2["openai-sentinel-token"] = sentinel_otp
-                r = self.session.post(url, json={"code": otp_code}, headers=headers2,
-                                      impersonate=self.impersonate)
-                if r.status_code != 200:
-                    raise Exception(f"验证码失败 ({r.status_code}): {r.text[:300]}")
+                h_otp2["openai-sentinel-token"] = sentinel_otp
+            r = self.session.post(f"{self.AUTH}/api/accounts/email-otp/validate",
+                                  json={"code": otp_code}, headers=h_otp2,
+                                  timeout=30, impersonate=self.impersonate)
+            if r.status_code != 200:
+                raise Exception(f"OTP 验证失败 ({r.status_code}): {r.text[:300]}")
+        self._print("[步骤4] OTP 验证成功")
 
-            # cfmail 成功标记
-            if provider == "cfmail" and self._cfmail_account_name:
-                _record_cfmail_success(self._cfmail_account_name)
+        if provider == "cfmail" and self._cfmail_account_name:
+            _record_cfmail_success(self._cfmail_account_name)
 
         _random_delay(0.5, 1.5)
+
+        # 步骤5: 创建账号（Playwright 获取完整 sentinel token）
+        self._print("[步骤5] 创建账号")
         self._create_account_with_sentinel(name, birthdate)
-        _random_delay(0.2, 0.5)
-        self.callback()
         return True
 
     def _create_account_with_sentinel(self, name: str, birthdate: str):
