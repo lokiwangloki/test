@@ -2777,11 +2777,26 @@ class ChatGPTRegister:
         return True
 
     def _create_account_with_sentinel(self, name: str, birthdate: str):
-        """带 sentinel token 的 create_account"""
-        sentinel_ca = build_sentinel_token(
-            self.session, self.device_id, flow="oauth_create_account",
-            user_agent=self.ua, sec_ch_ua=self.sec_ch_ua, impersonate=self.impersonate,
-        )
+        """带 sentinel token 的 create_account（优先 Playwright 浏览器获取完整 Turnstile token）"""
+        # 优先浏览器方式（含完整 Turnstile t 字段）
+        sentinel_ca = None
+        try:
+            from sentinel_browser import get_sentinel_token_via_browser
+            sentinel_ca = get_sentinel_token_via_browser(
+                flow="oauth_create_account",
+                proxy=self.proxy if self.proxy else None,
+                timeout_ms=45000,
+            )
+        except Exception as e:
+            self._print(f"[Browser] sentinel 异常: {e}")
+
+        if not sentinel_ca:
+            self._print("[Browser] 回退纯 HTTP PoW...")
+            sentinel_ca = build_sentinel_token(
+                self.session, self.device_id, flow="oauth_create_account",
+                user_agent=self.ua, sec_ch_ua=self.sec_ch_ua, impersonate=self.impersonate,
+            )
+
         url = f"{self.AUTH}/api/accounts/create_account"
         headers = {"Content-Type": "application/json", "Accept": "application/json",
                     "Referer": f"{self.AUTH}/about-you", "Origin": self.AUTH,
@@ -2805,11 +2820,22 @@ class ChatGPTRegister:
         elif r.status_code in (400, 403) and (
             "sentinel" in r.text.lower() or "registration_disallowed" in r.text.lower()
         ):
-            self._print("sentinel 校验失败，重试...")
-            sentinel_ca = build_sentinel_token(
-                self.session, self.device_id, flow="oauth_create_account",
-                user_agent=self.ua, sec_ch_ua=self.sec_ch_ua, impersonate=self.impersonate,
-            )
+            self._print("sentinel 校验失败，用浏览器重试...")
+            sentinel_ca = None
+            try:
+                from sentinel_browser import get_sentinel_token_via_browser
+                sentinel_ca = get_sentinel_token_via_browser(
+                    flow="oauth_create_account",
+                    proxy=self.proxy if self.proxy else None,
+                    timeout_ms=45000,
+                )
+            except Exception:
+                pass
+            if not sentinel_ca:
+                sentinel_ca = build_sentinel_token(
+                    self.session, self.device_id, flow="oauth_create_account",
+                    user_agent=self.ua, sec_ch_ua=self.sec_ch_ua, impersonate=self.impersonate,
+                )
             if sentinel_ca:
                 headers["openai-sentinel-token"] = sentinel_ca
             headers.update(_make_trace_headers())
