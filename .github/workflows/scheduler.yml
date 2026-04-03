@@ -79,10 +79,30 @@ jobs:
           import os, json
           from curl_cffi import requests as r
           wd = os.environ.get('CFMAIL_WORKER_DOMAIN','').strip()
-          ed = os.environ.get('CFMAIL_EMAIL_DOMAIN','').strip()
+          active_domain = ''
+          accounts_path = 'zhuce5_cfmail_accounts.json'
+          if os.path.exists(accounts_path):
+              try:
+                  with open(accounts_path, 'r', encoding='utf-8') as f:
+                      payload = json.load(f)
+                  raw_accounts = payload.get('accounts') if isinstance(payload, dict) else payload if isinstance(payload, list) else []
+                  if isinstance(raw_accounts, list):
+                      for item in raw_accounts:
+                          if not isinstance(item, dict):
+                              continue
+                          if not item.get('enabled', True):
+                              continue
+                          candidate = str(item.get('email_domain') or '').strip()
+                          if candidate:
+                              active_domain = candidate
+                              break
+              except Exception as e:
+                  print(f'WARN: failed to read {accounts_path}: {e}')
+          ed = active_domain or os.environ.get('CFMAIL_EMAIL_DOMAIN','').strip()
           ap = os.environ.get('CFMAIL_ADMIN_PASSWORD','').strip()
           print(f'WORKER_DOMAIN set: {bool(wd)} len={len(wd)}')
           print(f'EMAIL_DOMAIN set: {bool(ed)} len={len(ed)}')
+          print(f'ACTIVE_CONFIG_DOMAIN: {active_domain or \"<none>\"}')
           print(f'ADMIN_PASSWORD set: {bool(ap)} len={len(ap)}')
           if not (wd and ed and ap):
               print('ERROR: cfmail secrets incomplete'); exit(1)

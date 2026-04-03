@@ -31,6 +31,27 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         self.assertEqual(reason, "未获取到 authorization code")
 
+    def test_extract_stage_failure_reason_prefers_token_recovery_context_over_generic_oauth_failure(self):
+        output = "\n".join([
+            "[existing-session] authorize: 302",
+            "[existing-session] session endpoint: 200",
+            "[existing-session] 未能直接获取 token，回退 fresh login",
+        ])
+
+        reason = runtime_engine._extract_stage_failure_reason(output, "OAuth Token 获取失败")
+
+        self.assertEqual(reason, "未能直接获取 token，回退 fresh login")
+
+    def test_extract_stage_failure_reason_prefers_specific_transport_error_over_retry_summary(self):
+        output = "\n".join([
+            "❌ OAuth 授权请求失败: timed out",
+            "❌ 重试次数耗尽，OAuth 授权失败",
+        ])
+
+        reason = runtime_engine._extract_stage_failure_reason(output, "OAuth Token 获取失败")
+
+        self.assertEqual(reason, "OAuth 授权请求失败: timed out")
+
     def test_run_cpa_upload_with_compact_log_only_prints_terminal_status(self):
         def fake_upload():
             print("============================================================")
@@ -250,6 +271,13 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIn("MAIL_PROVIDER", workflow)
         self.assertIn("PROXY", workflow)
         self.assertIn("UPLOAD_API_PROXY", workflow)
+
+    def test_scheduler_workflow_cfmail_diagnose_prefers_active_cached_domain(self):
+        workflow = Path(".github/workflows/scheduler.yml").read_text(encoding="utf-8")
+        self.assertIn("zhuce5_cfmail_accounts.json", workflow)
+        self.assertIn("active_domain", workflow)
+        self.assertIn("item.get('enabled', True)", workflow)
+        self.assertIn("ed = active_domain or os.environ.get('CFMAIL_EMAIL_DOMAIN','').strip()", workflow)
 
     def test_scheduler_workflow_does_not_block_cfmail_on_wildmail_diagnose(self):
         workflow = Path(".github/workflows/scheduler.yml").read_text(encoding="utf-8")
@@ -503,6 +531,7 @@ class ProxyNormalizationTests(unittest.TestCase):
 
     def test_run_batch_initial_rotation_does_not_skip_cfmail_smoke(self):
         rotate_kwargs = []
+        normalize_targets = []
 
         class FakeProvisioner:
             def __init__(self, *args, **kwargs):
@@ -527,7 +556,7 @@ class ProxyNormalizationTests(unittest.TestCase):
                 return types.SimpleNamespace(success=False, error="skip")
 
             def normalize_to_domain_pool(self, target_count):
-                del target_count
+                normalize_targets.append(target_count)
                 return {"active_domains": []}
 
         class FakeFuture:
@@ -575,6 +604,7 @@ class ProxyNormalizationTests(unittest.TestCase):
                                                                     runtime_batch.run_batch(total_accounts=1, max_workers=1)
 
         self.assertEqual(rotate_kwargs, [{}])
+        self.assertEqual(normalize_targets, [3])
 
     def test_run_batch_keeps_only_managed_letter_domain_after_rotation(self):
         managed_domain = "abcdefghijkl.example.com"

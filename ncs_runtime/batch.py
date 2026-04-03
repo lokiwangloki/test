@@ -1,5 +1,6 @@
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import io
+import os
 import re
 import threading
 import time
@@ -11,6 +12,14 @@ from .engine import RegistrationEngine, _extract_stage_failure_reason
 
 _MAX_CONSECUTIVE_FAILURES = 30
 _CPA_UPLOAD_RESULT_RE = re.compile(r"上传完成:\s*成功\s*(\d+)\s*个,\s*失败\s*(\d+)\s*个")
+
+
+def _cfmail_active_domain_target() -> int:
+    raw = str(os.getenv("ZHUCE6_CFMAIL_ACTIVE_DOMAIN_COUNT", "3") or "3").strip()
+    try:
+        return max(1, int(raw or "3"))
+    except Exception:
+        return 3
 
 
 def run_single(idx: int, total: int, proxy: str, output_file: str):
@@ -125,6 +134,7 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
     _consec_fail_lock = threading.Lock()
     _consec_fail_count = [0]
     _rotation_in_progress = [False]
+    _active_domain_target = _cfmail_active_domain_target()
 
     if provider == "cfmail" and legacy.CFMAIL_PROVISIONING_ENABLED:
         from .cfmail_provisioner import CfmailProvisioner, ProvisioningSettings
@@ -165,19 +175,19 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
             _rot = _provisioner.rotate_active_domain()
             if _rot.success:
                 print(f"[cfmail] 随机子域名已创建: {_rot.new_domain}")
-                _pool = _provisioner.normalize_to_domain_pool(1)
-                _active_domains = list(_pool.get("active_domains") or [])
-                print(f"[cfmail] Worker 当前激活域名: {', '.join(_active_domains) if _active_domains else '无'}")
-                # 重新加载账号
-                legacy._reload_cfmail_accounts_if_needed(force=True)
-                _active_accounts = _active_cfmail_accounts_for_domains(_active_domains)
-                if _active_accounts:
-                    legacy.CFMAIL_ACCOUNTS = _active_accounts
-                    print(f"[cfmail] 注册将使用随机子域名: {', '.join(a.email_domain for a in _active_accounts)}")
-                else:
-                    print(f"[cfmail] 使用现有账号: {', '.join(a.email_domain for a in legacy.CFMAIL_ACCOUNTS)}")
             else:
-                print(f"[cfmail] 随机子域名创建失败: {_rot.error}，将使用现有域名")
+                print(f"[cfmail] 随机子域名创建失败: {_rot.error}，将继续整理现有域池")
+            _pool = _provisioner.normalize_to_domain_pool(_active_domain_target)
+            _active_domains = list(_pool.get("active_domains") or [])
+            print(f"[cfmail] Worker 当前激活域名: {', '.join(_active_domains) if _active_domains else '无'}")
+            # 重新加载账号
+            legacy._reload_cfmail_accounts_if_needed(force=True)
+            _active_accounts = _active_cfmail_accounts_for_domains(_active_domains)
+            if _active_accounts:
+                legacy.CFMAIL_ACCOUNTS = _active_accounts
+                print(f"[cfmail] 注册将使用随机子域名: {', '.join(a.email_domain for a in _active_accounts)}")
+            else:
+                print(f"[cfmail] 使用现有账号: {', '.join(a.email_domain for a in legacy.CFMAIL_ACCOUNTS)}")
 
         except Exception as _norm_err:
             print(f"[cfmail] 随机子域名初始化失败（继续执行原有域名）: {_norm_err}")
@@ -196,15 +206,15 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
             result = _provisioner.rotate_active_domain()
             if result.success:
                 print(f"[cfmail] 域名轮换成功: {result.old_domain} -> {result.new_domain}")
-                _pool = _provisioner.normalize_to_domain_pool(1)
-                _active_domains = list(_pool.get("active_domains") or [])
-                print(f"[cfmail] Worker 当前激活域名: {', '.join(_active_domains) if _active_domains else '无'}")
-                legacy._reload_cfmail_accounts_if_needed(force=True)
-                _active_accounts = _active_cfmail_accounts_for_domains(_active_domains)
-                if _active_accounts:
-                    legacy.CFMAIL_ACCOUNTS = _active_accounts
             else:
                 print(f"[cfmail] 域名轮换失败: {result.error}")
+            _pool = _provisioner.normalize_to_domain_pool(_active_domain_target)
+            _active_domains = list(_pool.get("active_domains") or [])
+            print(f"[cfmail] Worker 当前激活域名: {', '.join(_active_domains) if _active_domains else '无'}")
+            legacy._reload_cfmail_accounts_if_needed(force=True)
+            _active_accounts = _active_cfmail_accounts_for_domains(_active_domains)
+            if _active_accounts:
+                legacy.CFMAIL_ACCOUNTS = _active_accounts
         except Exception as _rot_err:
             print(f"[cfmail] 域名轮换异常: {_rot_err}")
         finally:

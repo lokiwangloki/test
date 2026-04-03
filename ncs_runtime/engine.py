@@ -24,8 +24,27 @@ _FAILURE_REASON_MARKERS = (
     "traceback",
     "timeout",
     "超时",
+    "未能",
     "未获取",
     "missing",
+)
+_DIAGNOSTIC_REASON_MARKERS = (
+    "warning_banner",
+    "add-phone",
+    "session endpoint",
+    "未能直接获取 token",
+    "回退 fresh login",
+    "未获得 login_session",
+    "login_session: ❌",
+    "login_session: n",
+)
+_GENERIC_FAILURE_FRAGMENTS = (
+    "oauth token 获取失败",
+    "oauth 授权失败",
+    "注册失败",
+    "获取失败",
+    "未知错误",
+    "重试次数耗尽",
 )
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -49,17 +68,50 @@ def _sanitize_log_line(line: str) -> str:
     return text
 
 
+def _is_reason_candidate(line: str) -> bool:
+    lowered = line.lower()
+    return any(marker in lowered for marker in _FAILURE_REASON_MARKERS) or any(
+        marker in lowered for marker in _DIAGNOSTIC_REASON_MARKERS
+    )
+
+
+def _score_reason_candidate(line: str) -> int:
+    lowered = line.lower()
+    score = 0
+    if any(marker in lowered for marker in _FAILURE_REASON_MARKERS):
+        score += 40
+    if any(marker in lowered for marker in _DIAGNOSTIC_REASON_MARKERS):
+        score += 25
+    if ":" in line or "：" in line:
+        score += 8
+    if re.search(r"\b\d{3}\b", line):
+        score += 5
+    if "http" in lowered or "https" in lowered:
+        score += 4
+    if any(fragment in lowered for fragment in _GENERIC_FAILURE_FRAGMENTS):
+        score -= 20
+    if "重试次数耗尽" in lowered:
+        score -= 10
+    score += min(len(line), 120) // 24
+    return score
+
+
 def _extract_stage_failure_reason(output: str, fallback: str = "") -> str:
     candidates: list[str] = []
     for raw_line in str(output or "").splitlines():
         line = _sanitize_log_line(raw_line)
         if not line:
             continue
-        lowered = line.lower()
-        if any(marker in lowered for marker in _FAILURE_REASON_MARKERS):
+        if _is_reason_candidate(line):
             candidates.append(line)
 
-    chosen = candidates[-1] if candidates else _sanitize_log_line(fallback)
+    if candidates:
+        chosen = max(
+            enumerate(candidates),
+            key=lambda item: (_score_reason_candidate(item[1]), item[0]),
+        )[1]
+    else:
+        chosen = _sanitize_log_line(fallback)
     chosen = chosen or str(fallback or "").strip() or "未知错误"
     chosen = re.sub(r"^\[[^\]]+\]\s*", "", chosen).strip()
     chosen = re.sub(r"^[❌⚠️]+\s*", "", chosen).strip()
