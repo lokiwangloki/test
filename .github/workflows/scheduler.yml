@@ -64,9 +64,43 @@ jobs:
         uses: actions/cache@v4
         with:
           path: zhuce5_cfmail_accounts.json
-          key: cfmail-accounts-${{ github.run_id }}
+          key: cfmail-accounts-v2-${{ github.run_id }}
           restore-keys: |
-            cfmail-accounts-
+            cfmail-accounts-v2-
+
+      - name: Diagnose cfmail connectivity
+        continue-on-error: true
+        env:
+          CFMAIL_WORKER_DOMAIN: ${{ secrets.CFMAIL_WORKER_DOMAIN }}
+          CFMAIL_EMAIL_DOMAIN: ${{ secrets.CFMAIL_EMAIL_DOMAIN }}
+          CFMAIL_ADMIN_PASSWORD: ${{ secrets.CFMAIL_ADMIN_PASSWORD }}
+        run: |
+          python -u -c "
+          import os, json
+          from curl_cffi import requests as r
+          wd = os.environ.get('CFMAIL_WORKER_DOMAIN','').strip()
+          ed = os.environ.get('CFMAIL_EMAIL_DOMAIN','').strip()
+          ap = os.environ.get('CFMAIL_ADMIN_PASSWORD','').strip()
+          print(f'WORKER_DOMAIN set: {bool(wd)} len={len(wd)}')
+          print(f'EMAIL_DOMAIN set: {bool(ed)} len={len(ed)}')
+          print(f'ADMIN_PASSWORD set: {bool(ap)} len={len(ap)}')
+          if not (wd and ed and ap):
+              print('ERROR: cfmail secrets incomplete'); exit(1)
+          url = f'https://{wd}/admin/new_address'
+          print(f'Testing POST {url} domain={ed}')
+          try:
+              resp = r.post(url, json={'enablePrefix':True,'name':'diagtest','domain':ed},
+                  headers={'x-admin-auth':ap,'Content-Type':'application/json'},
+                  timeout=15, impersonate='chrome')
+              print(f'Status: {resp.status_code}')
+              print(f'Body: {resp.text[:300]}')
+              if resp.status_code==200:
+                  d=resp.json(); print(f'OK email={d.get(\"address\")} jwt_len={len(d.get(\"jwt\",\"\"))}')
+              else:
+                  print('FAIL - check secrets values')
+          except Exception as e:
+              print(f'Exception: {e}')
+          "
 
       - name: Run auto_scheduler
         env:
@@ -102,4 +136,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: zhuce5_cfmail_accounts.json
-          key: cfmail-accounts-${{ github.run_id }}
+          key: cfmail-accounts-v2-${{ github.run_id }}
