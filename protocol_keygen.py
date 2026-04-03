@@ -798,11 +798,8 @@ def _fetch_client_auth_session_dump(session_obj, referer="https://auth.openai.co
             verify=False,
             timeout=15,
         )
-    except Exception as exc:
-        print(f"{log_prefix}client_auth_session_dump 失败: {exc}")
+    except Exception:
         return None
-
-    print(f"{log_prefix}client_auth_session_dump: {response.status_code}")
     if response.status_code != 200:
         return None
 
@@ -824,7 +821,6 @@ def _load_oauth_session_payload(session_obj, referer="https://auth.openai.com/ad
     payload = _decode_oauth_session_cookie(session_obj)
     workspaces = (payload or {}).get("workspaces") or []
     if payload and isinstance(workspaces, list) and workspaces:
-        print(f"{log_prefix}session cookie workspace_count: {len(workspaces)}")
         return payload
 
     dump_payload = _fetch_client_auth_session_dump(
@@ -834,14 +830,11 @@ def _load_oauth_session_payload(session_obj, referer="https://auth.openai.com/ad
     )
     dump_workspaces = (dump_payload or {}).get("workspaces") or []
     if isinstance(dump_payload, dict) and isinstance(dump_workspaces, list):
-        print(f"{log_prefix}session dump workspace_count: {len(dump_workspaces)}")
         if dump_workspaces:
             return dump_payload
         if not payload:
             return dump_payload
 
-    if payload is not None:
-        print(f"{log_prefix}session cookie workspace_count: {len(workspaces)}")
     return payload
 
 
@@ -871,25 +864,18 @@ def _try_workspace_org_selection_for_code(
         log_prefix=prefix,
     )
     if not isinstance(session_data, dict):
-        print(f"{prefix}无法加载 OAuth session payload")
         return None
 
     workspaces = session_data.get("workspaces") or []
     if not isinstance(workspaces, list):
         workspaces = []
-    print(f"{prefix}session keys: {list(session_data.keys())}")
     if not workspaces:
-        print(f"{prefix}⚠️ session 中无 workspaces 数据，疑似 hard add-phone")
         return None
 
     workspace_id = str((workspaces[0] or {}).get("id") or "").strip()
-    ws_kind = str((workspaces[0] or {}).get("kind") or "?").strip()
     if not workspace_id:
-        print(f"{prefix}⚠️ workspace 数据缺少 id")
         return None
 
-    print(f"{prefix}✅ workspace_id: {workspace_id} (kind: {ws_kind})")
-    print(f"{prefix}POST workspace/select...")
     try:
         response = session_obj.post(
             f"{OAUTH_ISSUER}/api/accounts/workspace/select",
@@ -899,15 +885,12 @@ def _try_workspace_org_selection_for_code(
             timeout=30,
             allow_redirects=False,
         )
-    except Exception as exc:
-        print(f"{prefix}⚠️ workspace/select 异常: {exc}")
+    except Exception:
         return None
 
-    print(f"{prefix}workspace/select: {response.status_code}")
     location = str(response.headers.get("Location") or "").strip()
     auth_code = _extract_authorization_code_from_url(location)
     if auth_code:
-        print(f"{prefix}✅ workspace/select 直接获取到 code")
         return auth_code
     if location:
         auth_code = _follow_existing_session_redirects_for_code(
@@ -915,7 +898,6 @@ def _try_workspace_org_selection_for_code(
             urljoin(f"{OAUTH_ISSUER}/api/accounts/workspace/select", location),
         )
         if auth_code:
-            print(f"{prefix}✅ workspace/select 跟踪重定向获取到 code")
             return auth_code
 
     if response.status_code != 200:
@@ -928,15 +910,11 @@ def _try_workspace_org_selection_for_code(
 
     ws_next = str(ws_data.get("continue_url") or "").strip()
     ws_page = str((ws_data.get("page") or {}).get("type") or "").strip()
-    print(f"{prefix}workspace/select continue_url: {ws_next}")
-    print(f"{prefix}workspace/select page.type: {ws_page}")
 
     full_next = urljoin(OAUTH_ISSUER, ws_next) if ws_next else ""
     if "organization" not in ws_next and "organization" not in ws_page:
         if full_next:
             auth_code = _follow_existing_session_redirects_for_code(session_obj, full_next)
-            if auth_code:
-                print(f"{prefix}✅ follow continue_url 获取到 code")
         return auth_code
 
     ws_orgs = (ws_data.get("data") or {}).get("orgs") or []
@@ -947,21 +925,15 @@ def _try_workspace_org_selection_for_code(
     project_id = str(((projects[0] or {}).get("id") if projects else "") or "").strip()
 
     if not org_id:
-        print(f"{prefix}⚠️ organization/select 缺少 org_id，尝试直接跟踪")
         if full_next:
             return _follow_existing_session_redirects_for_code(session_obj, full_next)
         return None
-
-    print(f"{prefix}✅ org_id: {org_id}")
-    if project_id:
-        print(f"{prefix}✅ project_id: {project_id}")
 
     body = {"org_id": org_id}
     if project_id:
         body["project_id"] = project_id
 
     org_referer = full_next or consent_url
-    print(f"{prefix}POST organization/select...")
     try:
         response = session_obj.post(
             f"{OAUTH_ISSUER}/api/accounts/organization/select",
@@ -971,15 +943,12 @@ def _try_workspace_org_selection_for_code(
             timeout=30,
             allow_redirects=False,
         )
-    except Exception as exc:
-        print(f"{prefix}⚠️ organization/select 异常: {exc}")
+    except Exception:
         return None
 
-    print(f"{prefix}organization/select: {response.status_code}")
     location = str(response.headers.get("Location") or "").strip()
     auth_code = _extract_authorization_code_from_url(location)
     if auth_code:
-        print(f"{prefix}✅ organization/select 直接获取到 code")
         return auth_code
     if location:
         auth_code = _follow_existing_session_redirects_for_code(
@@ -987,7 +956,6 @@ def _try_workspace_org_selection_for_code(
             urljoin(f"{OAUTH_ISSUER}/api/accounts/organization/select", location),
         )
         if auth_code:
-            print(f"{prefix}✅ organization/select 跟踪重定向获取到 code")
             return auth_code
 
     if response.status_code != 200:
@@ -1001,13 +969,10 @@ def _try_workspace_org_selection_for_code(
     org_next = str(org_data.get("continue_url") or "").strip()
     if not org_next:
         return None
-    auth_code = _follow_existing_session_redirects_for_code(
+    return _follow_existing_session_redirects_for_code(
         session_obj,
         urljoin(OAUTH_ISSUER, org_next),
     )
-    if auth_code:
-        print(f"{prefix}✅ organization/select continue_url 获取到 code")
-    return auth_code
 
 
 def _try_registrar_session_oauth(email, registrar_session, authorize_url, code_verifier):
@@ -1074,7 +1039,6 @@ def _try_registrar_session_oauth(email, registrar_session, authorize_url, code_v
                 session_data = session_response.json()
             except Exception:
                 session_data = {}
-            print(f"  [existing-session] session keys: {list(session_data.keys())}")
             tokens = _build_codex_session_tokens_from_session_data(email, session_data)
             if tokens:
                 print("  [existing-session] ✅ 直接从 session endpoint 获取到 token")
@@ -1089,12 +1053,12 @@ def _try_registrar_session_oauth(email, registrar_session, authorize_url, code_v
         log_prefix="  [existing-session] ",
     )
     if auth_code:
-        print("  [existing-session] ✅ 通过 workspace/org 路径获取到 authorization code")
+        print("  [existing-session] ✅ 获取到 authorization code")
         tokens = codex_exchange_code(auth_code, code_verifier)
         if tokens:
             print("  [existing-session] ✅ 使用注册会话换取 token 成功")
             return tokens
-        print("  [existing-session] workspace/org code 交换失败，继续回退 fresh login")
+        print("  [existing-session] code 交换失败，继续尝试 fresh login")
 
     print("  [existing-session] 未能直接获取 token，回退 fresh login")
     return None
@@ -2050,11 +2014,7 @@ def perform_codex_oauth_login_http(email, password, registrar_session=None, cf_t
     # ----- 步骤4b: 从 cookie 提取 workspace_id，POST workspace/select -----
     if not auth_code:
         print("  [4b] 解码 session → 提取 workspace_id...")
-        session_data = _load_oauth_session_payload(
-            session,
-            referer=consent_url,
-            log_prefix="  [4b] ",
-        )
+        session_data = _decode_auth_session(session)
 
         workspace_id = None
         if session_data:
