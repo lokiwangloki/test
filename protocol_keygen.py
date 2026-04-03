@@ -838,6 +838,7 @@ def _load_oauth_browser_tokens(flows=None, proxy=None, timeout_ms=60000):
             flows=normalized_flows,
             proxy=proxy,
             timeout_ms=timeout_ms,
+            user_agent=COMMON_HEADERS.get("user-agent", "") or USER_AGENT,
         ) or {}
     except Exception as exc:
         print(f"  ❌ OAuth 浏览器 sentinel 获取失败: {exc}")
@@ -1523,7 +1524,11 @@ class ProtocolRegistrar:
             try:
                 from sentinel_browser import get_sentinel_token_via_browser
                 retry_token = get_sentinel_token_via_browser(
-                    flow="oauth_create_account", proxy=PROXY if PROXY else None, timeout_ms=45000)
+                    flow="oauth_create_account",
+                    proxy=PROXY if PROXY else None,
+                    timeout_ms=45000,
+                    user_agent=COMMON_HEADERS.get("user-agent", "") or USER_AGENT,
+                )
             except Exception:
                 pass
             if not retry_token:

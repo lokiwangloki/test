@@ -16,6 +16,7 @@ sys.modules.setdefault("curl_cffi", fake_curl_cffi)
 import ncs_register
 import ncs_register_legacy
 import protocol_keygen
+import sentinel_browser
 from ncs_runtime import batch as runtime_batch, email_services, engine as runtime_engine
 
 
@@ -68,6 +69,155 @@ class ProxyNormalizationTests(unittest.TestCase):
         reason = runtime_engine._extract_stage_failure_reason(output, "注册失败")
 
         self.assertEqual(reason, "浏览器兜底失败: playwright import failed: No module named 'playwright'")
+
+    def test_load_oauth_browser_tokens_uses_registration_user_agent(self):
+        fake_module = types.ModuleType("sentinel_browser")
+        fake_module.get_all_sentinel_tokens = mock.Mock(
+            return_value={
+                "authorize_continue": '{"flow":"authorize_continue","c":"browser-ac"}',
+                "password_verify": '{"flow":"password_verify","c":"browser-pwd"}',
+            }
+        )
+
+        with mock.patch.dict(sys.modules, {"sentinel_browser": fake_module}):
+            tokens = protocol_keygen._load_oauth_browser_tokens(
+                flows=["authorize_continue", "password_verify"],
+                proxy="http://127.0.0.1:9000",
+                timeout_ms=12345,
+            )
+
+        self.assertEqual(
+            tokens,
+            {
+                "authorize_continue": '{"flow":"authorize_continue","c":"browser-ac"}',
+                "password_verify": '{"flow":"password_verify","c":"browser-pwd"}',
+            },
+        )
+        fake_module.get_all_sentinel_tokens.assert_called_once_with(
+            flows=["authorize_continue", "password_verify"],
+            proxy="http://127.0.0.1:9000",
+            timeout_ms=12345,
+            user_agent=protocol_keygen.COMMON_HEADERS.get("user-agent", "") or protocol_keygen.USER_AGENT,
+        )
+
+    def test_sentinel_browser_get_all_sentinel_tokens_normalizes_reference_payload(self):
+        class FakePage:
+            def __init__(self):
+                self.goto_args = None
+                self.wait_timeout_ms = None
+                self.wait_function_args = None
+
+            def goto(self, url, **kwargs):
+                self.goto_args = (url, kwargs)
+
+            def wait_for_timeout(self, timeout_ms):
+                self.wait_timeout_ms = timeout_ms
+
+            def wait_for_function(self, expression, **kwargs):
+                self.wait_function_args = (expression, kwargs)
+
+            def evaluate(self, script, flows):
+                del script
+                self.flows = list(flows)
+                return {
+                    "source": "playwright_sentinel_multi_helper",
+                    "generatedAt": "2026-04-04T00:00:00Z",
+                    "frameUrl": sentinel_browser.FRAME_URL,
+                    "sdkUrl": sentinel_browser.SDK_URL,
+                    "userAgent": "UA-123",
+                    "userAgentData": None,
+                    "cookieBefore": "",
+                    "flows": {
+                        "authorize_continue": {
+                            "flow": "authorize_continue",
+                            "token": {
+                                "p": "pow-1",
+                                "t": "turn-1",
+                                "c": "challenge-1",
+                                "id": "did-1",
+                                "flow": "authorize_continue",
+                            },
+                            "soToken": {"observer": "yes"},
+                            "cookieAfter": "cf_clearance=1",
+                        },
+                        "password_verify": {
+                            "flow": "password_verify",
+                            "token": None,
+                            "soToken": None,
+                            "cookieAfter": "cf_clearance=1",
+                        },
+                    },
+                }
+
+        class FakeContext:
+            def __init__(self, page):
+                self.page = page
+
+            def new_page(self):
+                return self.page
+
+        class FakeBrowser:
+            def __init__(self, page):
+                self.page = page
+                self.context_kwargs = None
+                self.closed = False
+
+            def new_context(self, **kwargs):
+                self.context_kwargs = dict(kwargs)
+                return FakeContext(self.page)
+
+            def close(self):
+                self.closed = True
+
+        class FakeChromium:
+            def __init__(self, browser):
+                self.browser = browser
+                self.launch_kwargs = None
+
+            def launch(self, **kwargs):
+                self.launch_kwargs = dict(kwargs)
+                return self.browser
+
+        class FakePlaywrightManager:
+            def __init__(self, chromium):
+                self.chromium = chromium
+
+        class FakePlaywrightContext:
+            def __init__(self, chromium):
+                self.playwright = FakePlaywrightManager(chromium)
+
+            def __enter__(self):
+                return self.playwright
+
+            def __exit__(self, exc_type, exc, tb):
+                del exc_type, exc, tb
+                return False
+
+        fake_page = FakePage()
+        fake_browser = FakeBrowser(fake_page)
+        fake_chromium = FakeChromium(fake_browser)
+
+        with mock.patch.object(
+            sentinel_browser,
+            "sync_playwright",
+            return_value=FakePlaywrightContext(fake_chromium),
+        ):
+            tokens = sentinel_browser.get_all_sentinel_tokens(
+                flows=["authorize_continue", "password_verify"],
+                proxy="http://127.0.0.1:8000",
+                timeout_ms=120000,
+                user_agent="UA-123",
+            )
+
+        self.assertEqual(
+            tokens["authorize_continue"],
+            '{"p":"pow-1","t":"turn-1","c":"challenge-1","id":"did-1","flow":"authorize_continue"}',
+        )
+        self.assertIsNone(tokens["password_verify"])
+        self.assertEqual(fake_chromium.launch_kwargs["proxy"], {"server": "http://127.0.0.1:8000"})
+        self.assertEqual(fake_browser.context_kwargs["user_agent"], "UA-123")
+        self.assertEqual(fake_page.goto_args[0], sentinel_browser.FRAME_URL)
+        self.assertEqual(fake_page.wait_timeout_ms, 8000)
 
     def test_progress_uses_line_mode_in_github_actions(self):
         with mock.patch.dict("os.environ", {"GITHUB_ACTIONS": "true"}, clear=False):

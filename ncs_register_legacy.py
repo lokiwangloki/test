@@ -2940,6 +2940,7 @@ class ChatGPTRegister:
                 flow="oauth_create_account",
                 proxy=self.proxy if self.proxy else None,
                 timeout_ms=45000,
+                user_agent=self.ua,
             )
         except Exception as e:
             self._print(f"[Browser] sentinel 异常: {e}")
@@ -2982,6 +2983,7 @@ class ChatGPTRegister:
                     flow="oauth_create_account",
                     proxy=self.proxy if self.proxy else None,
                     timeout_ms=45000,
+                    user_agent=self.ua,
                 )
             except Exception:
                 pass

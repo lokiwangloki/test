@@ -208,7 +208,7 @@ class RegistrationEngine:
             # ===== 使用 protocol_keygen 的纯 HTTP 注册流程 =====
             from protocol_keygen import (
                 ProtocolRegistrar, create_session, perform_codex_oauth_login_http,
-                save_tokens, save_account, create_temp_email, PROXY,
+                save_tokens, save_account, create_temp_email, PROXY, COMMON_HEADERS,
             )
             from sentinel_browser import get_all_sentinel_tokens
 
@@ -218,6 +218,7 @@ class RegistrationEngine:
                 with _capture_stage_output() as registration_output:
                     browser_tokens = get_all_sentinel_tokens(
                         proxy=PROXY if PROXY else None,
+                        user_agent=COMMON_HEADERS.get("user-agent", ""),
                     )
                     registrar = ProtocolRegistrar(browser_tokens=browser_tokens)
 
