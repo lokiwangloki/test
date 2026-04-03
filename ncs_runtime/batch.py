@@ -70,14 +70,56 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
         )
         _provisioner = CfmailProvisioner(proxy_url=proxy, settings=_settings)
         _health_tracker = DomainHealthTracker()
-        print("[cfmail] 正在初始化域名池...")
+        print("[cfmail] 正在准备随机子域名...")
         try:
-            norm = _provisioner.normalize_to_domain_pool(1)
-            if norm.get("provisioned_domains"):
-                print(f"[cfmail] 新增子域名: {', '.join(norm['provisioned_domains'])}")
-            print(f"[cfmail] 活跃域名: {', '.join(norm.get('active_domains') or [])}")
+            # 若账号文件中没有任何有效账号，先用 env 变量写入 base 账号作为 provisioning 来源
+            _existing = _provisioner._load_all_accounts()
+            _valid_existing = [
+                a for a in _existing
+                if str(a.get("worker_domain", "")).strip()
+                and str(a.get("admin_password", "")).strip()
+            ]
+            if not _valid_existing:
+                _base_worker = legacy.CFMAIL_WORKER_DOMAIN
+                _base_pass = legacy.CFMAIL_ADMIN_PASSWORD
+                _base_email = legacy.CFMAIL_EMAIL_DOMAIN or legacy.CF_ZONE_NAME
+                if _base_worker and _base_pass and _base_email:
+                    _provisioner._write_accounts([{
+                        "name": "cfmail-base",
+                        "worker_domain": _base_worker,
+                        "email_domain": _base_email,
+                        "admin_password": _base_pass,
+                        "enabled": True,
+                    }])
+                    print(f"[cfmail] 已写入 base 账号: {_base_email}")
+
+            # 检查是否已有 auto 随机子域名
+            _active_domains = _provisioner.current_active_domains()
+            _has_auto = any(d.startswith("auto") for d in _active_domains)
+
+            if not _has_auto:
+                # 轮换：将当前静态域名替换为新的随机子域名
+                _rot = _provisioner.rotate_active_domain()
+                if _rot.success:
+                    print(f"[cfmail] 随机子域名已创建: {_rot.new_domain}")
+                else:
+                    print(f"[cfmail] 随机子域名创建失败: {_rot.error}，将继续使用现有域名")
+            else:
+                print(f"[cfmail] 已有随机子域名: {', '.join(_active_domains)}")
+
+            # 强制重新加载账号，让注册流程使用新域名
+            legacy._reload_cfmail_accounts_if_needed(force=True)
+
+            # 只保留 auto 随机子域名账号，排除静态 env 账号
+            _auto_accounts = [a for a in legacy.CFMAIL_ACCOUNTS if a.email_domain.startswith("auto")]
+            if _auto_accounts:
+                legacy.CFMAIL_ACCOUNTS = _auto_accounts
+                print(f"[cfmail] 注册将使用随机子域名: {', '.join(a.email_domain for a in _auto_accounts)}")
+            else:
+                print(f"[cfmail] 未找到 auto 账号，使用现有账号: {', '.join(a.email_domain for a in legacy.CFMAIL_ACCOUNTS)}")
+
         except Exception as _norm_err:
-            print(f"[cfmail] 域名池初始化失败（继续执行）: {_norm_err}")
+            print(f"[cfmail] 随机子域名初始化失败（继续执行原有域名）: {_norm_err}")
             _provisioner = None
             _health_tracker = None
 
