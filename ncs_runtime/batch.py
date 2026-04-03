@@ -14,6 +14,32 @@ def run_single(idx: int, total: int, proxy: str, output_file: str):
     return result.success, result.email or None, result.error_code or "", result.error_message or None
 
 
+def _sync_cfmail_accounts_with_env_credentials(provisioner) -> bool:
+    worker_domain = legacy._normalize_host(legacy.CFMAIL_WORKER_DOMAIN)
+    admin_password = str(legacy.CFMAIL_ADMIN_PASSWORD or "").strip()
+    if not worker_domain or not admin_password:
+        return False
+
+    accounts = provisioner._load_all_accounts()
+    changed = False
+    normalized_accounts = []
+    for item in accounts:
+        if not isinstance(item, dict):
+            continue
+        updated = dict(item)
+        if legacy._normalize_host(updated.get("worker_domain", "")) != worker_domain:
+            updated["worker_domain"] = worker_domain
+            changed = True
+        if str(updated.get("admin_password") or "").strip() != admin_password:
+            updated["admin_password"] = admin_password
+            changed = True
+        normalized_accounts.append(updated)
+
+    if changed:
+        provisioner._write_accounts(normalized_accounts)
+    return changed
+
+
 def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.txt",
               max_workers: int = 3, proxy: str = None, cpa_cleanup=None,
               cpa_upload_every_n: int = 3):
@@ -70,6 +96,7 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
         _provisioner = CfmailProvisioner(proxy_url=proxy, settings=_settings)
         print("[cfmail] 正在准备随机子域名...")
         try:
+            _sync_cfmail_accounts_with_env_credentials(_provisioner)
             # 若账号文件中没有任何有效账号，先用 env 变量写入 base 账号作为 provisioning 来源
             _existing = _provisioner._load_all_accounts()
             _valid_existing = [
@@ -92,11 +119,9 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                     print(f"[cfmail] 已写入 base 账号: {_base_email}")
 
             # 创建新随机子域名
-            _rot = _provisioner.rotate_active_domain(skip_smoke=True)
+            _rot = _provisioner.rotate_active_domain()
             if _rot.success:
                 print(f"[cfmail] 随机子域名已创建: {_rot.new_domain}")
-                print("[cfmail] 等待 90 秒让 CF Workers 绑定生效...")
-                time.sleep(90)
                 _pool = _provisioner.normalize_to_domain_pool(1)
                 _active_domains = list(_pool.get("active_domains") or [])
                 print(f"[cfmail] Worker 当前激活域名: {', '.join(_active_domains) if _active_domains else '无'}")
@@ -132,11 +157,10 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
             _rotation_in_progress[0] = True
         try:
             print(f"\n[cfmail] 连续失败 {_MAX_CONSECUTIVE_FAILURES} 次，触发域名轮换...")
-            result = _provisioner.rotate_active_domain(skip_smoke=True)
+            _sync_cfmail_accounts_with_env_credentials(_provisioner)
+            result = _provisioner.rotate_active_domain()
             if result.success:
                 print(f"[cfmail] 域名轮换成功: {result.old_domain} -> {result.new_domain}")
-                print("[cfmail] 等待 60 秒让 CF Workers 绑定生效...")
-                time.sleep(60)
                 _pool = _provisioner.normalize_to_domain_pool(1)
                 _active_domains = list(_pool.get("active_domains") or [])
                 print(f"[cfmail] Worker 当前激活域名: {', '.join(_active_domains) if _active_domains else '无'}")

@@ -13,7 +13,7 @@ sys.modules.setdefault("curl_cffi", fake_curl_cffi)
 
 import ncs_register
 import ncs_register_legacy
-from ncs_runtime import email_services, engine as runtime_engine
+from ncs_runtime import batch as runtime_batch, email_services, engine as runtime_engine
 
 
 class ProxyNormalizationTests(unittest.TestCase):
@@ -387,6 +387,124 @@ class ProxyNormalizationTests(unittest.TestCase):
         accounts = payload["accounts"]
         self.assertEqual(len(accounts), 1)
         self.assertEqual(accounts[0]["email_domain"], "auto-fresh.example.com")
+
+    def test_sync_cfmail_accounts_with_env_credentials_refreshes_cached_passwords(self):
+        config_path = Path("/tmp/test_cfmail_sync_accounts.json")
+        config_path.write_text(
+            json.dumps(
+                {
+                    "accounts": [
+                        {
+                            "name": "cached-auto",
+                            "worker_domain": "old-worker.example.com",
+                            "email_domain": "auto-cache.example.com",
+                            "admin_password": "old-secret",
+                            "enabled": True,
+                        }
+                    ]
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        provisioner = __import__("ncs_runtime.cfmail_provisioner", fromlist=["CfmailProvisioner", "ProvisioningSettings"]).CfmailProvisioner(
+            config_path=config_path,
+            settings=__import__("ncs_runtime.cfmail_provisioner", fromlist=["ProvisioningSettings"]).ProvisioningSettings(
+                auth_email="a",
+                auth_key="b",
+                account_id="c",
+                zone_id="d",
+                worker_name="w",
+                zone_name="example.com",
+            ),
+        )
+
+        with mock.patch.object(ncs_register_legacy, "CFMAIL_WORKER_DOMAIN", "https://fresh-worker.example.com/"):
+            with mock.patch.object(ncs_register_legacy, "CFMAIL_ADMIN_PASSWORD", "fresh-secret"):
+                changed = runtime_batch._sync_cfmail_accounts_with_env_credentials(provisioner)
+
+        self.assertTrue(changed)
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+        account = payload["accounts"][0]
+        self.assertEqual(account["worker_domain"], "fresh-worker.example.com")
+        self.assertEqual(account["admin_password"], "fresh-secret")
+        self.assertEqual(account["email_domain"], "auto-cache.example.com")
+
+    def test_run_batch_initial_rotation_does_not_skip_cfmail_smoke(self):
+        rotate_kwargs = []
+
+        class FakeProvisioner:
+            def __init__(self, *args, **kwargs):
+                del args, kwargs
+
+            def _load_all_accounts(self):
+                return [
+                    {
+                        "name": "cached-auto",
+                        "worker_domain": "worker.example.com",
+                        "email_domain": "auto-live.example.com",
+                        "admin_password": "stale-secret",
+                        "enabled": True,
+                    }
+                ]
+
+            def _write_accounts(self, accounts):
+                self.accounts = accounts
+
+            def rotate_active_domain(self, **kwargs):
+                rotate_kwargs.append(dict(kwargs))
+                return types.SimpleNamespace(success=False, error="skip")
+
+            def normalize_to_domain_pool(self, target_count):
+                del target_count
+                return {"active_domains": []}
+
+        class FakeFuture:
+            def result(self):
+                return True, "ok@example.com", "", None
+
+        class FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                del args, kwargs
+                self.future = FakeFuture()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                del fn, args, kwargs
+                return self.future
+
+        fake_account = ncs_register_legacy.CfmailAccount(
+            name="default",
+            worker_domain="worker.example.com",
+            email_domain="base.example.com",
+            admin_password="secret",
+        )
+
+        with mock.patch.object(ncs_register_legacy, "MAIL_PROVIDER", "cfmail"):
+            with mock.patch.object(ncs_register_legacy, "CFMAIL_ACCOUNTS", [fake_account]):
+                with mock.patch.object(ncs_register_legacy, "CFMAIL_PROVISIONING_ENABLED", True):
+                    with mock.patch.object(ncs_register_legacy, "CFMAIL_WORKER_DOMAIN", "worker.example.com"):
+                        with mock.patch.object(ncs_register_legacy, "CFMAIL_ADMIN_PASSWORD", "secret"):
+                            with mock.patch.object(ncs_register_legacy, "CFMAIL_EMAIL_DOMAIN", "base.example.com"):
+                                with mock.patch.object(ncs_register_legacy, "CF_ZONE_NAME", "example.com"):
+                                    with mock.patch.object(ncs_register_legacy, "ENABLE_OAUTH", False):
+                                        with mock.patch.object(ncs_register_legacy, "UPLOAD_API_URL", ""):
+                                            with mock.patch.object(runtime_batch, "ThreadPoolExecutor", FakeExecutor):
+                                                with mock.patch.object(runtime_batch, "wait", side_effect=lambda futures, return_when=None: (set(futures), set())):
+                                                    with mock.patch.object(runtime_batch, "run_single", return_value=(True, "ok@example.com", "", None)):
+                                                        with mock.patch("ncs_runtime.cfmail_provisioner.CfmailProvisioner", FakeProvisioner):
+                                                            with mock.patch("ncs_runtime.cfmail_provisioner.ProvisioningSettings") as settings_cls:
+                                                                settings_cls.return_value = object()
+                                                                with mock.patch("time.sleep", return_value=None):
+                                                                    runtime_batch.run_batch(total_accounts=1, max_workers=1)
+
+        self.assertEqual(rotate_kwargs, [{}])
 
     def test_wildmail_service_creates_mailbox_via_register_client(self):
         register_client = mock.Mock()
