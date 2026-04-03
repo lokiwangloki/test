@@ -500,7 +500,7 @@ class CfmailProvisioner:
                 return item
         raise RuntimeError("no active cfmail account found")
 
-    def provision_additional_domain(self) -> ProvisionResult:
+    def provision_additional_domain(self, *, skip_smoke: bool = False) -> ProvisionResult:
         current = self.current_active_account()
         worker_domain = str(current.get("worker_domain") or "").strip()
         admin_password = str(current.get("admin_password") or "").strip()
@@ -513,7 +513,8 @@ class CfmailProvisioner:
             self._create_dns_records(new_domain)
             existing_domains = self.current_active_domains()
             self._set_worker_domains([*existing_domains, new_domain])
-            self.smoke_test(worker_domain, admin_password, new_domain)
+            if not skip_smoke:
+                self.smoke_test(worker_domain, admin_password, new_domain)
             accounts = self._load_all_accounts()
             accounts.append(
                 {
@@ -666,7 +667,7 @@ class CfmailProvisioner:
         self._write_accounts(normalized_accounts)
         return sorted(set(domain for domain in removed_domains if domain and domain != new_domain.lower()))
 
-    def rotate_active_domain(self) -> ProvisionResult:
+    def rotate_active_domain(self, *, skip_smoke: bool = False) -> ProvisionResult:
         current = self.current_active_account()
         old_domain = str(current.get("email_domain") or "").strip().lower()
         worker_domain = str(current.get("worker_domain") or "").strip()
@@ -683,7 +684,8 @@ class CfmailProvisioner:
                 self._create_email_routing_rule(new_domain, label)
                 self._create_dns_records(new_domain)
                 self._update_worker_domains(new_domain, old_domain=old_domain)
-                self.smoke_test(worker_domain, admin_password, new_domain)
+                if not skip_smoke:
+                    self.smoke_test(worker_domain, admin_password, new_domain)
                 self.switch_active_domain(
                     old_domain=old_domain,
                     new_domain=new_domain,

@@ -59,6 +59,14 @@ jobs:
             echo "WILDMAIL secrets not configured, skip diagnose"
           fi
 
+      - name: Restore cfmail accounts cache
+        uses: actions/cache@v4
+        with:
+          path: zhuce5_cfmail_accounts.json
+          key: cfmail-accounts-${{ github.run_id }}
+          restore-keys: |
+            cfmail-accounts-
+
       - name: Run auto_scheduler
         env:
           PYTHONUNBUFFERED: 1
@@ -87,3 +95,10 @@ jobs:
           else
             python -u auto_scheduler.py
           fi
+
+      - name: Save cfmail accounts cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: zhuce5_cfmail_accounts.json
+          key: cfmail-accounts-${{ github.run_id }}

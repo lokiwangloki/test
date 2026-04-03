@@ -6,6 +6,8 @@ import ncs_register_legacy as legacy
 
 from .engine import RegistrationEngine
 
+_MAX_CONSECUTIVE_FAILURES = 5
+
 
 def run_single(idx: int, total: int, proxy: str, output_file: str):
     result = RegistrationEngine(idx=idx, total=total, proxy=proxy, output_file=output_file).run()
@@ -53,13 +55,10 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
 
     # cfmail 子域名自动配置
     _provisioner = None
-    _health_tracker = None
     _rotation_lock = threading.Lock()
-    _rotation_in_progress = [False]
 
     if provider == "cfmail" and legacy.CFMAIL_PROVISIONING_ENABLED:
         from .cfmail_provisioner import CfmailProvisioner, ProvisioningSettings
-        from .cfmail_domain_rotation import DomainHealthTracker, make_domain_attempt
         _settings = ProvisioningSettings(
             auth_email=legacy.CF_AUTH_EMAIL,
             auth_key=legacy.CF_AUTH_KEY,
@@ -69,7 +68,6 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
             zone_name=legacy.CF_ZONE_NAME,
         )
         _provisioner = CfmailProvisioner(proxy_url=proxy, settings=_settings)
-        _health_tracker = DomainHealthTracker()
         print("[cfmail] 正在准备随机子域名...")
         try:
             # 若账号文件中没有任何有效账号，先用 env 变量写入 base 账号作为 provisioning 来源
@@ -98,8 +96,8 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
             _has_auto = any(d.startswith("auto") for d in _active_domains)
 
             if not _has_auto:
-                # 轮换：将当前静态域名替换为新的随机子域名
-                _rot = _provisioner.rotate_active_domain()
+                # 轮换：将当前静态域名替换为新的随机子域名（跳过烟雾测试，避免CF传播延迟）
+                _rot = _provisioner.rotate_active_domain(skip_smoke=True)
                 if _rot.success:
                     print(f"[cfmail] 随机子域名已创建: {_rot.new_domain}")
                 else:
@@ -121,28 +119,30 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
         except Exception as _norm_err:
             print(f"[cfmail] 随机子域名初始化失败（继续执行原有域名）: {_norm_err}")
             _provisioner = None
-            _health_tracker = None
 
-    def _try_rotate_domain(domain: str, reason: str) -> None:
-        if _provisioner is None or _health_tracker is None:
+    _consec_fail_lock = threading.Lock()
+    _consec_fail_count = [0]
+    _rotation_in_progress = [False]
+
+    def _try_rotate_domain() -> None:
+        if _provisioner is None:
             return
         with _rotation_lock:
             if _rotation_in_progress[0]:
                 return
             _rotation_in_progress[0] = True
         try:
-            _health_tracker.mark_rotation_started(domain, reason)
-            print(f"\n[cfmail] 触发域名轮换: {domain} 原因: {reason}")
-            result = _provisioner.rotate_active_domain()
+            print(f"\n[cfmail] 连续失败 {_MAX_CONSECUTIVE_FAILURES} 次，触发域名轮换...")
+            result = _provisioner.rotate_active_domain(skip_smoke=True)
             if result.success:
-                _health_tracker.mark_rotation_completed(result.old_domain, result.new_domain)
                 legacy._reload_cfmail_accounts_if_needed(force=True)
+                _auto_accounts = [a for a in legacy.CFMAIL_ACCOUNTS if a.email_domain.startswith("auto")]
+                if _auto_accounts:
+                    legacy.CFMAIL_ACCOUNTS = _auto_accounts
                 print(f"[cfmail] 域名轮换成功: {result.old_domain} -> {result.new_domain}")
             else:
-                _health_tracker.mark_rotation_failed(domain, result.error)
                 print(f"[cfmail] 域名轮换失败: {result.error}")
         except Exception as _rot_err:
-            _health_tracker.mark_rotation_failed(domain, str(_rot_err))
             print(f"[cfmail] 域名轮换异常: {_rot_err}")
         finally:
             with _rotation_lock:
@@ -184,6 +184,8 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                     if ok:
                         success_count += 1
                         since_last_upload += 1
+                        with _consec_fail_lock:
+                            _consec_fail_count[0] = 0
                         if legacy.UPLOAD_API_URL and since_last_upload >= upload_every_n:
                             print(f"\n[CPA] 达到分批上传阈值: {since_last_upload}/{upload_every_n}，开始上传...")
                             legacy._upload_all_tokens_to_cpa()
@@ -191,20 +193,15 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                     else:
                         fail_count += 1
                         print(f"  [账号 {idx}] 失败: {err}")
-                    if _health_tracker is not None and email:
-                        attempt = make_domain_attempt(
-                            email=email,
-                            success=ok,
-                            error_message=err or "",
-                            error_code=error_code,
-                            proxy_key=proxy or "",
-                        )
-                        if attempt is not None:
-                            decision = _health_tracker.record(attempt)
-                            if decision.should_rotate:
+                        if _provisioner is not None:
+                            with _consec_fail_lock:
+                                _consec_fail_count[0] += 1
+                                should_rotate = _consec_fail_count[0] >= _MAX_CONSECUTIVE_FAILURES
+                                if should_rotate:
+                                    _consec_fail_count[0] = 0
+                            if should_rotate:
                                 threading.Thread(
                                     target=_try_rotate_domain,
-                                    args=(decision.domain, decision.reason),
                                     daemon=True,
                                 ).start()
                 except Exception as error:
