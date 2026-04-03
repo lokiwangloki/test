@@ -2611,6 +2611,9 @@ def save_token_json(email, access_token, refresh_token=None, id_token=None):
         now = datetime.now(tz=timezone(timedelta(hours=8)))
         last_refresh_str = now.strftime("%Y-%m-%dT%H:%M:%S+08:00")
 
+        # 自动分配固定代理 IP（轮询 7901-7910）
+        proxy_url = _next_proxy_url()
+
         token_data = {
             "type": "codex",
             "email": email,
@@ -2620,11 +2623,9 @@ def save_token_json(email, access_token, refresh_token=None, id_token=None):
             "access_token": access_token,
             "last_refresh": last_refresh_str,
             "refresh_token": refresh_token or "",
+            "proxy_url": proxy_url,
         }
-        if str(PROXY or "").strip():
-            proxy_url = _next_proxy_url()
-            token_data["proxy_url"] = proxy_url
-            print(f"  🌐 分配代理: {proxy_url}")
+        print(f"  🌐 分配代理: {proxy_url}")
 
         filename = f"{email}.json"
         with open(filename, "w", encoding="utf-8") as f:

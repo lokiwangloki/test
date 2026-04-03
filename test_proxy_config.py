@@ -4,8 +4,6 @@ import types
 import base64
 import io
 import json
-import os
-import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -149,69 +147,6 @@ class ProxyNormalizationTests(unittest.TestCase):
             "\nn\nregistered_accounts.txt\n500\n3\nn\n3\n",
         )
 
-    def test_trigger_registration_runs_protocol_keygen_with_temp_config_and_no_proxy(self):
-        params = {
-            "total_accounts": 7,
-            "max_workers": 4,
-        }
-        cfg = {}
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheduler_path = os.path.join(tmpdir, "auto_scheduler.py")
-            script_path = os.path.join(tmpdir, "protocol_keygen.py")
-            config_path = os.path.join(tmpdir, "config.json")
-
-            Path(script_path).write_text("print('ok')\n", encoding="utf-8")
-            original_config = {
-                "total_accounts": 1000,
-                "concurrent_workers": 2,
-                "proxy": "http://127.0.0.1:7890",
-            }
-            Path(config_path).write_text(json.dumps(original_config), encoding="utf-8")
-
-            seen = {}
-
-            def fake_run(cmd, **kwargs):
-                seen["cmd"] = cmd
-                seen["cwd"] = kwargs.get("cwd")
-                seen["env"] = kwargs.get("env", {})
-                with open(config_path, "r", encoding="utf-8") as fh:
-                    seen["config_during_run"] = json.load(fh)
-                return types.SimpleNamespace(returncode=0)
-
-            with mock.patch("auto_scheduler.os.path.abspath", return_value=scheduler_path):
-                with mock.patch("auto_scheduler.subprocess.run", side_effect=fake_run):
-                    ok = auto_scheduler.trigger_registration(params, cfg)
-
-            self.assertTrue(ok)
-            self.assertEqual(seen["cmd"], [sys.executable, script_path])
-            self.assertEqual(seen["cwd"], tmpdir)
-            self.assertEqual(seen["config_during_run"]["total_accounts"], 7)
-            self.assertEqual(seen["config_during_run"]["concurrent_workers"], 4)
-            self.assertEqual(seen["config_during_run"]["proxy"], "")
-            self.assertEqual(seen["env"].get("PROXY"), "")
-            self.assertEqual(seen["env"].get("HTTPS_PROXY"), "")
-            self.assertEqual(seen["env"].get("ALL_PROXY"), "")
-
-            restored = json.loads(Path(config_path).read_text(encoding="utf-8"))
-            self.assertEqual(restored, original_config)
-
-    def test_protocol_keygen_save_token_json_skips_proxy_url_when_proxy_disabled(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            old_cwd = os.getcwd()
-            os.chdir(tmpdir)
-            try:
-                with mock.patch.object(protocol_keygen, "PROXY", ""):
-                    with mock.patch.object(protocol_keygen, "UPLOAD_API_URL", ""):
-                        with mock.patch.object(protocol_keygen, "_next_proxy_url", side_effect=AssertionError("proxy_url should not be allocated")):
-                            protocol_keygen.save_token_json("user@example.com", "not-a-jwt")
-
-                payload = json.loads(Path("user@example.com.json").read_text(encoding="utf-8"))
-            finally:
-                os.chdir(old_cwd)
-
-        self.assertNotIn("proxy_url", payload)
-
     def test_auto_scheduler_defaults_target_1000_accounts(self):
         self.assertEqual(auto_scheduler.ACCOUNT_THRESHOLD, 1000)
         self.assertEqual(auto_scheduler.AUTO_PARAMS["total_accounts"], 1000)
@@ -219,8 +154,8 @@ class ProxyNormalizationTests(unittest.TestCase):
     def test_auto_scheduler_defaults_register_workers_to_8(self):
         self.assertEqual(auto_scheduler.AUTO_PARAMS["max_workers"], 8)
 
-    def test_auto_scheduler_reference_flow_does_not_use_upload_batch_interval(self):
-        self.assertNotIn("cpa_upload_every_n", auto_scheduler.AUTO_PARAMS)
+    def test_auto_scheduler_uploads_each_success_immediately_by_default(self):
+        self.assertEqual(auto_scheduler.AUTO_PARAMS["cpa_upload_every_n"], 1)
 
     def test_run_once_registers_only_missing_gap(self):
         cfg = {"upload_api_url": "", "upload_api_token": ""}
@@ -281,10 +216,6 @@ class ProxyNormalizationTests(unittest.TestCase):
     def test_scheduler_workflow_uses_staggered_cron(self):
         workflow = Path(".github/workflows/scheduler.yml").read_text(encoding="utf-8")
         self.assertIn("cron: '3,33 * * * *'", workflow)
-
-    def test_scheduler_workflow_does_not_inject_registration_proxy(self):
-        workflow = Path(".github/workflows/scheduler.yml").read_text(encoding="utf-8")
-        self.assertNotIn("PROXY: ${{ secrets.PROXY }}", workflow)
 
     def test_auto_scheduler_retries_transient_auth_files_dns_error(self):
         class FakeResponse:

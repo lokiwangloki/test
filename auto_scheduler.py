@@ -1,7 +1,7 @@
 """
 auto_scheduler.py - 自动调度器
 每1小时检测有效账号数量（通过实际探测 401/403 判定无效），
-当有效数量 < 1000 时自动触发 protocol_keygen.py 批量注册。
+当有效数量 < 1000 时自动触发 ncs_register.py 批量注册。
 """
 
 import os
@@ -9,7 +9,6 @@ import time
 import subprocess
 import sys
 import json
-import shutil
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
@@ -20,12 +19,17 @@ from config_env import env_override
 
 CHECK_INTERVAL_SECONDS = 3600       # 检查间隔：1小时
 ACCOUNT_THRESHOLD = 1000            # 有效账号数量阈值
-REGISTER_SCRIPT = "protocol_keygen.py" # 注册脚本文件名
+REGISTER_SCRIPT = "ncs_register.py" # 注册脚本文件名
 
-# 注册参数（对应 protocol_keygen.py / config.json）
+# 注册参数（对应 ncs_register.py 的 main() 交互）
 AUTO_PARAMS = {
+    "proxy": "",                        # 代理地址，留空=不使用代理
+    "preflight": "n",                   # 是否执行启动前预检: "y" 或 "n"（调度建议 n，避免交互阻塞）
+    "cpa_cleanup": "n",                 # 注册前是否清理 CPA 无效号: "y" 或 "n"
+                                        # （调度器自己已经做了探测+删除，建议设 "n" 避免重复）
     "total_accounts": 1000,             # 默认直接补足阈值缺口
     "max_workers": 8,                   # 并发数
+    "cpa_upload_every_n": 1,            # 成功一个即上传一个
 }
 
 # 探测配置
@@ -322,10 +326,19 @@ def count_valid_accounts_by_probe(cfg: dict) -> int:
     return estimated_valid
 
 
+# ================= 自动触发注册 =================
+
 def build_register_input(params: dict, cfg: dict) -> str:
     """
-    保留旧的 ncs_register.py 交互输入构造逻辑，供兼容测试使用。
-    当前自动调度默认直接调用 protocol_keygen.py，不再使用该返回值。
+    构造模拟 ncs_register.py main() 交互的 stdin 输入序列。
+    顺序对应 main() 中的 input() 调用：
+      1. 使用默认代理? (Y/n)   —— 仅当 config.json 有代理或环境变量有代理时出现
+      2. 执行启动前连通性预检? (Y/n)
+      3. 输出文件名
+      4. 注册账号数量
+      5. 并发数
+      6. 注册前清理 CPA? (Y/n) —— 仅当 upload_api_url 非空时出现
+      7. 每成功多少个账号触发 CPA 上传
     """
     lines = []
 
@@ -349,13 +362,18 @@ def build_register_input(params: dict, cfg: dict) -> str:
         else:
             lines.append("y")
     else:
+        # 无默认代理，直接输入（可为空）
         lines.append(configured_proxy)
 
+    # 启动前预检
     lines.append(params.get("preflight", "n"))
-    lines.append(str(params.get("output_file", "registered_accounts.txt")))
-    lines.append(str(params.get("total_accounts", 10)))
-    lines.append(str(params.get("max_workers", AUTO_PARAMS["max_workers"])))
 
+    lines.append(str(params.get("output_file", "registered_accounts.txt")))
+
+    lines.append(str(params.get("total_accounts", 10)))
+    lines.append(str(params.get("max_workers", 8)))
+
+    # CPA 清理（仅当配置了 upload_api_url 时 main() 才会问）
     if cfg.get("upload_api_url", "").strip():
         lines.append(params.get("cpa_cleanup", "n"))
 
@@ -364,60 +382,24 @@ def build_register_input(params: dict, cfg: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _build_register_env() -> dict:
-    env = os.environ.copy()
-    for key in (
-        "PROXY",
-        "proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-        "HTTPS_PROXY",
-        "https_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-    ):
-        env[key] = ""
-    return env
-
-
-def _update_protocol_keygen_config(config_path: str, params: dict) -> dict:
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = json.load(f)
-    original = dict(config)
-    config["total_accounts"] = int(params.get("total_accounts", config.get("total_accounts", 1)) or 1)
-    config["concurrent_workers"] = int(params.get("max_workers", config.get("concurrent_workers", 1)) or 1)
-    config["proxy"] = ""
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-    return original
-
-
 def trigger_registration(params: dict, cfg: dict) -> bool:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    script_path = os.path.join(script_dir, REGISTER_SCRIPT)
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), REGISTER_SCRIPT)
     if not os.path.exists(script_path):
         print(f"[错误] 注册脚本不存在: {script_path}")
         return False
 
-    config_path = os.path.join(script_dir, "config.json")
-    if not os.path.exists(config_path):
-        print(f"[错误] 配置文件不存在: {config_path}")
-        return False
-
-    backup_path = config_path + ".bak"
+    stdin_input = build_register_input(params, cfg)
     print(f"\n[触发注册] 调用 {REGISTER_SCRIPT}")
-    print(f"[触发注册] 参数预览: total_accounts={params.get('total_accounts')} max_workers={params.get('max_workers')} proxy=disabled")
+    print(f"[触发注册] stdin 参数预览:\n{stdin_input.strip()}")
     print(f"[触发注册] 开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
     try:
-        shutil.copy2(config_path, backup_path)
-        original_config = _update_protocol_keygen_config(config_path, params)
         result = subprocess.run(
             [sys.executable, script_path],
+            input=stdin_input,
             text=True,
             timeout=7200,   # 最长等待 2 小时
-            cwd=script_dir,
-            env=_build_register_env(),
+            cwd=os.path.dirname(os.path.abspath(__file__)),
         )
         print(f"\n[触发注册] 完成，返回码: {result.returncode}")
         return result.returncode == 0
@@ -427,16 +409,6 @@ def trigger_registration(params: dict, cfg: dict) -> bool:
     except Exception as e:
         print(f"[触发注册] 执行异常: {e}")
         return False
-    finally:
-        try:
-            if os.path.exists(backup_path):
-                shutil.copy2(backup_path, config_path)
-                os.remove(backup_path)
-            elif "original_config" in locals():
-                with open(config_path, "w", encoding="utf-8") as f:
-                    json.dump(original_config, f, ensure_ascii=False, indent=2)
-        except Exception as restore_error:
-            print(f"[触发注册] 恢复 config.json 失败: {restore_error}")
 
 
 def _count_valid_accounts(cfg: dict) -> int:

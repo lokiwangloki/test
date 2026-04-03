@@ -115,6 +115,7 @@ jobs:
           WILDMAIL_API_KEY: ${{ secrets.WILDMAIL_API_KEY }}
           UPLOAD_API_URL: ${{ secrets.UPLOAD_API_URL }}
           UPLOAD_API_TOKEN: ${{ secrets.UPLOAD_API_TOKEN }}
+          PROXY: ${{ secrets.PROXY }}
           UPLOAD_API_PROXY: ${{ secrets.UPLOAD_API_PROXY }}
           CF_AUTH_EMAIL: ${{ secrets.CF_AUTH_EMAIL }}
           CF_AUTH_KEY: ${{ secrets.CF_AUTH_KEY }}
