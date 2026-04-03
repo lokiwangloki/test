@@ -545,7 +545,7 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(account["admin_password"], "fresh-secret")
         self.assertEqual(account["email_domain"], "auto-cache.example.com")
 
-    def test_run_batch_initial_rotation_does_not_skip_cfmail_smoke(self):
+    def test_run_batch_startup_normalizes_cfmail_pool_without_forced_rotation(self):
         rotate_kwargs = []
         normalize_targets = []
 
@@ -619,7 +619,7 @@ class ProxyNormalizationTests(unittest.TestCase):
                                                                 with mock.patch("time.sleep", return_value=None):
                                                                     runtime_batch.run_batch(total_accounts=1, max_workers=1)
 
-        self.assertEqual(rotate_kwargs, [{}])
+        self.assertEqual(rotate_kwargs, [])
         self.assertEqual(normalize_targets, [3])
 
     def test_run_batch_keeps_only_managed_letter_domain_after_rotation(self):
@@ -829,7 +829,7 @@ class ProxyNormalizationTests(unittest.TestCase):
                                                             with mock.patch("time.sleep", return_value=None):
                                                                 runtime_batch.run_batch(total_accounts=5, max_workers=1)
 
-        self.assertEqual(rotate_kwargs, [{}])
+        self.assertEqual(rotate_kwargs, [])
 
     def test_run_batch_rotates_cfmail_domains_after_30_consecutive_failures(self):
         rotate_kwargs = []
@@ -913,7 +913,7 @@ class ProxyNormalizationTests(unittest.TestCase):
                                                                 with mock.patch("time.sleep", return_value=None):
                                                                     runtime_batch.run_batch(total_accounts=30, max_workers=1)
 
-        self.assertEqual(len(rotate_kwargs), 2)
+        self.assertEqual(len(rotate_kwargs), 1)
 
     def test_wildmail_service_creates_mailbox_via_register_client(self):
         register_client = mock.Mock()

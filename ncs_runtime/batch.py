@@ -147,7 +147,7 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
             zone_name=legacy.CF_ZONE_NAME,
         )
         _provisioner = CfmailProvisioner(proxy_url=proxy, settings=_settings)
-        print("[cfmail] 正在准备随机子域名...")
+        print("[cfmail] 正在整理激活域池...")
         try:
             _sync_cfmail_accounts_with_env_credentials(_provisioner)
             # 若账号文件中没有任何有效账号，先用 env 变量写入 base 账号作为 provisioning 来源
@@ -171,14 +171,16 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                     }])
                     print(f"[cfmail] 已写入 base 账号: {_base_email}")
 
-            # 创建新随机子域名
-            _rot = _provisioner.rotate_active_domain()
-            if _rot.success:
-                print(f"[cfmail] 随机子域名已创建: {_rot.new_domain}")
-            else:
-                print(f"[cfmail] 随机子域名创建失败: {_rot.error}，将继续整理现有域池")
             _pool = _provisioner.normalize_to_domain_pool(_active_domain_target)
             _active_domains = list(_pool.get("active_domains") or [])
+            _provisioned_domains = list(_pool.get("provisioned_domains") or [])
+            _retired_domains = list(_pool.get("retired_domains") or [])
+            if _provisioned_domains or _retired_domains:
+                print(
+                    "[cfmail] 域池整理完成: "
+                    f"新增={', '.join(_provisioned_domains) if _provisioned_domains else '无'} "
+                    f"移除={', '.join(_retired_domains) if _retired_domains else '无'}"
+                )
             print(f"[cfmail] Worker 当前激活域名: {', '.join(_active_domains) if _active_domains else '无'}")
             # 重新加载账号
             legacy._reload_cfmail_accounts_if_needed(force=True)
