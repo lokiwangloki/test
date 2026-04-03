@@ -11,3 +11,6 @@ wheels/
 #.env file for local secrets
 .env
 .env.local
+
+# Local config overrides with credentials
+config.local.json
