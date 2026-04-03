@@ -227,6 +227,19 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         self.assertEqual(count_mock.call_count, 2)
 
+    def test_run_once_forces_total_accounts_override_even_above_threshold(self):
+        cfg = {"upload_api_url": "", "upload_api_token": ""}
+        with mock.patch.dict("os.environ", {"AUTO_SCHEDULER_FORCE_TOTAL_ACCOUNTS": "10000"}, clear=False):
+            with mock.patch("auto_scheduler._load_account_count_config", side_effect=[cfg, cfg]):
+                with mock.patch("auto_scheduler.count_valid_accounts_local", side_effect=[1200, 1200]):
+                    with mock.patch("auto_scheduler.trigger_registration", return_value=True) as trigger_mock:
+                        result = auto_scheduler.run_once()
+
+        self.assertTrue(result)
+        params, passed_cfg = trigger_mock.call_args[0]
+        self.assertEqual(params["total_accounts"], 10000)
+        self.assertEqual(passed_cfg, cfg)
+
     def test_cpa_root_url_normalizes_to_management_auth_files(self):
         self.assertEqual(
             auto_scheduler._cpa_auth_files_url("http://example.com:8317"),
@@ -290,6 +303,12 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIn("active_domain", workflow)
         self.assertIn("item.get('enabled', True)", workflow)
         self.assertIn("ed = active_domain or os.environ.get('CFMAIL_EMAIL_DOMAIN','').strip()", workflow)
+
+    def test_scheduler_workflow_supports_manual_total_accounts_override(self):
+        workflow = Path(".github/workflows/scheduler.yml").read_text(encoding="utf-8")
+        self.assertIn("total_accounts_override:", workflow)
+        self.assertIn("AUTO_SCHEDULER_FORCE_TOTAL_ACCOUNTS:", workflow)
+        self.assertIn("github.event.inputs.total_accounts_override", workflow)
 
     def test_scheduler_workflow_caps_cfmail_startup_domain_pool_for_8_workers(self):
         workflow = Path(".github/workflows/scheduler.yml").read_text(encoding="utf-8")

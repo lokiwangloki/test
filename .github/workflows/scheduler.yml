@@ -3,7 +3,12 @@ name: Hourly Auto Scheduler
 on:
   schedule:
     - cron: '3,33 * * * *'  # 每30分钟固定错峰执行，避开整点高峰
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      total_accounts_override:
+        description: '手动指定本次注册数量；留空则按缺口自动补足'
+        required: false
+        default: ''
 
 jobs:
   run-scheduler:
@@ -125,6 +130,7 @@ jobs:
       - name: Run auto_scheduler
         env:
           PYTHONUNBUFFERED: 1
+          AUTO_SCHEDULER_FORCE_TOTAL_ACCOUNTS: ${{ github.event.inputs.total_accounts_override || '' }}
           MAIL_PROVIDER: cfmail
           ZHUCE6_CFMAIL_ACTIVE_DOMAIN_COUNT: 2
           CFMAIL_WORKER_DOMAIN: ${{ secrets.CFMAIL_WORKER_DOMAIN }}

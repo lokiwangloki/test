@@ -42,6 +42,17 @@ CPA_RETRY_DELAY_SECONDS = 2
 
 # ================= 加载 config.json =================
 
+def _forced_total_accounts_override() -> int:
+    raw = str(os.environ.get("AUTO_SCHEDULER_FORCE_TOTAL_ACCOUNTS", "") or "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except Exception:
+        print(f"[调度] 忽略无效的强制注册数量: {raw}")
+        return 0
+    return max(0, value)
+
 def _normalize_proxy_value(value: str) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -421,6 +432,7 @@ def _count_valid_accounts(cfg: dict) -> int:
 def run_once():
     cfg = _load_account_count_config()
     use_cpa = bool(cfg.get("upload_api_url") and cfg.get("upload_api_token"))
+    forced_total_accounts = _forced_total_accounts_override()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n{'─' * 60}")
     print(f"[{now_str}] 开始检测有效账号数量...")
@@ -433,7 +445,26 @@ def run_once():
 
     print(f"[检测] 当前有效账号: {count} 个 (阈值: {ACCOUNT_THRESHOLD})")
 
-    if count < ACCOUNT_THRESHOLD:
+    if forced_total_accounts > 0:
+        print(f"[调度] ⚠️  检测到手动强制注册数量，直接触发注册 {forced_total_accounts} 个...")
+        register_params = dict(AUTO_PARAMS)
+        register_params["total_accounts"] = forced_total_accounts
+        success = trigger_registration(register_params, cfg)
+        if not success:
+            print("[调度] 注册执行失败，本轮以失败结束")
+            return False
+
+        cfg = _load_account_count_config()
+        use_cpa = bool(cfg.get("upload_api_url") and cfg.get("upload_api_token"))
+        try:
+            recount = _count_valid_accounts(cfg)
+        except Exception as e:
+            print(f"[调度] 注册后复检异常: {e}，本轮以失败结束")
+            return False
+
+        print(f"[调度] 注册后复检有效账号: {recount} 个 (阈值: {ACCOUNT_THRESHOLD})")
+        print(f"[调度] 本轮为手动强制注册 {forced_total_accounts} 个，复检完成后直接结束")
+    elif count < ACCOUNT_THRESHOLD:
         needed = ACCOUNT_THRESHOLD - count
         print(f"[检测] ⚠️  账号不足！缺口 {needed} 个，触发自动注册...")
         register_params = dict(AUTO_PARAMS)
