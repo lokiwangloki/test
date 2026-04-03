@@ -1,10 +1,10 @@
+import time
 from dataclasses import dataclass
 from typing import Optional
 
 import ncs_register_legacy as legacy
 
 from .email_services import build_mailbox_service, get_provider_candidates
-from .v2_flow import run_registration_v2
 
 
 _KNOWN_ERROR_CODES = frozenset({
@@ -36,7 +36,7 @@ class RegistrationResult:
 
 
 class RegistrationEngine:
-    """Single-account registration engine modeled after the reference project."""
+    """Single-account registration engine using protocol_keygen (codex oauth loop)."""
 
     def __init__(self, idx: int, total: int, proxy: Optional[str], output_file: str):
         self.idx = idx
@@ -100,30 +100,61 @@ class RegistrationEngine:
                 print(f"  姓名: {name} | 生日: {birthdate}")
                 print(f"{'=' * 60}")
 
+            # ===== 使用 protocol_keygen 的纯 HTTP 注册流程 =====
+            from protocol_keygen import (
+                ProtocolRegistrar, create_session, perform_codex_oauth_login_http,
+                save_tokens, save_account, create_temp_email,
+            )
+
+            registrar = ProtocolRegistrar()
             otp_fetcher = mailbox_service.wait_for_verification_code
 
+            register_client._print("[Protocol] 步骤0: OAuth 初始化 + 邮箱提交")
+            if not registrar.step0_init_oauth_session(mailbox.email):
+                raise Exception("Protocol 步骤0 失败: OAuth 会话初始化失败")
+
+            time.sleep(1)
+
+            register_client._print("[Protocol] 步骤2: 注册用户")
+            if not registrar.step2_register_user(mailbox.email, chatgpt_password):
+                raise Exception("Protocol 步骤2 失败: 注册用户失败")
+
+            time.sleep(1)
+
+            register_client._print("[Protocol] 步骤3: 触发 OTP")
+            registrar.step3_send_otp()
+
+            register_client._print("[Protocol] 等待验证码...")
+            otp_code = otp_fetcher(120)
+            if not otp_code:
+                raise Exception("未能获取验证码")
+
+            register_client._print(f"[Protocol] 步骤4: 验证 OTP ({otp_code})")
+            if not registrar.step4_validate_otp(otp_code):
+                raise Exception("Protocol 步骤4 失败: OTP 验证失败")
+
+            time.sleep(1)
+
+            first_name, last_name = name.split(" ", 1) if " " in name else (name, "Smith")
+            register_client._print("[Protocol] 步骤5: 创建账号（Playwright sentinel）")
+            if not registrar.step5_create_account(first_name, last_name, birthdate):
+                raise Exception("Protocol 步骤5 失败: 创建账号失败")
+
+            register_client._print("[Protocol] 注册成功!")
+            save_account(mailbox.email, chatgpt_password)
+
             oauth_ok = True
-            register_client._print("[Legacy] 开始执行本地同款注册流程...")
-            register_client.run_register(
-                mailbox.email,
-                chatgpt_password,
-                name,
-                birthdate,
-                mailbox.token,
-                provider=effective_provider,
-                otp_fetcher=otp_fetcher,
-            )
             if legacy.ENABLE_OAUTH:
                 register_client._print("[OAuth] 开始获取 Codex Token...")
-                tokens = register_client.fetch_codex_session_tokens(
-                    mailbox.email,
-                    chatgpt_password,
-                    mail_token=mailbox.token,
-                    provider=effective_provider,
-                    otp_fetcher=otp_fetcher,
+                time.sleep(5)
+                tokens = perform_codex_oauth_login_http(
+                    mailbox.email, chatgpt_password,
+                    registrar_session=registrar.session,
+                    cf_token=mailbox.token,
                 )
                 oauth_ok = bool(tokens and tokens.get("access_token"))
                 if oauth_ok:
+                    save_tokens(mailbox.email, tokens)
                     legacy._save_codex_tokens(mailbox.email, tokens)
                     register_client._print("[OAuth] Token 已保存")
                 else:
