@@ -1,12 +1,16 @@
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+import io
+import re
 import threading
 import time
+from contextlib import redirect_stderr, redirect_stdout
 
 import ncs_register_legacy as legacy
 
-from .engine import RegistrationEngine
+from .engine import RegistrationEngine, _extract_stage_failure_reason
 
 _MAX_CONSECUTIVE_FAILURES = 30
+_CPA_UPLOAD_RESULT_RE = re.compile(r"上传完成:\s*成功\s*(\d+)\s*个,\s*失败\s*(\d+)\s*个")
 
 
 def run_single(idx: int, total: int, proxy: str, output_file: str):
@@ -52,6 +56,28 @@ def _sync_cfmail_accounts_with_env_credentials(provisioner) -> bool:
     if changed:
         provisioner._write_accounts(normalized_accounts)
     return changed
+
+
+def _run_cpa_upload_with_compact_log() -> tuple[int, int, str]:
+    buffer = io.StringIO()
+    with redirect_stdout(buffer), redirect_stderr(buffer):
+        legacy._upload_all_tokens_to_cpa()
+
+    output = buffer.getvalue()
+    match = _CPA_UPLOAD_RESULT_RE.search(output)
+    if match:
+        uploaded = int(match.group(1))
+        failed = int(match.group(2))
+        if failed == 0 and uploaded > 0:
+            print("[CPA上传] ✅上传成功")
+            return uploaded, failed, ""
+        reason = f"成功 {uploaded} 个, 失败 {failed} 个"
+        print(f"[CPA上传] ❌上传失败: {reason}")
+        return uploaded, failed, reason
+
+    reason = _extract_stage_failure_reason(output, "未找到可上传 token")
+    print(f"[CPA上传] ❌上传失败: {reason}")
+    return 0, 0, reason
 
 
 def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.txt",
@@ -238,18 +264,16 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                         with _consec_fail_lock:
                             _consec_fail_count[0] = 0
                         if legacy.UPLOAD_API_URL and since_last_upload >= upload_every_n:
-                            print(f"\n[CPA] 达到分批上传阈值: {since_last_upload}/{upload_every_n}，开始上传...")
-                            legacy._upload_all_tokens_to_cpa()
+                            _run_cpa_upload_with_compact_log()
                             since_last_upload = 0
                     else:
                         fail_count += 1
-                        print(f"  [账号 {idx}] 失败: {err}")
                         del error_code
                         _record_failure_and_maybe_rotate()
                 except Exception as error:
                     fail_count += 1
                     with legacy._print_lock:
-                        print(f"[FAIL] 账号 {idx} 线程异常: {error}")
+                        print(f"[{idx}] [仅注册] ❌注册失败: 线程异常: {error}")
                     _record_failure_and_maybe_rotate()
                 finally:
                     completed_count += 1
@@ -271,7 +295,6 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
     print(f"{'#' * 60}")
 
     if success_count > 0 and legacy.UPLOAD_API_URL and since_last_upload > 0:
-        print(f"\n[CPA] 收尾上传剩余 {since_last_upload} 个成功账号对应 token...")
-        legacy._upload_all_tokens_to_cpa()
+        _run_cpa_upload_with_compact_log()
 
     return success_count > 0

@@ -1,4 +1,7 @@
+import io
+import re
 import time
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from typing import Optional
 
@@ -13,6 +16,19 @@ _KNOWN_ERROR_CODES = frozenset({
     "user_already_exists",
 })
 
+_FAILURE_REASON_MARKERS = (
+    "❌",
+    "失败",
+    "错误",
+    "exception",
+    "traceback",
+    "timeout",
+    "超时",
+    "未获取",
+    "missing",
+)
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
 
 def _extract_error_code(message: str) -> str:
     msg = str(message or "").lower()
@@ -20,6 +36,52 @@ def _extract_error_code(message: str) -> str:
         if code in msg:
             return code
     return ""
+
+
+def _sanitize_log_line(line: str) -> str:
+    text = _ANSI_ESCAPE_RE.sub("", str(line or "")).strip()
+    if not text:
+        return ""
+    if text.startswith("进度:"):
+        return ""
+    if set(text) <= {"=", "#", "-", " "}:
+        return ""
+    return text
+
+
+def _extract_stage_failure_reason(output: str, fallback: str = "") -> str:
+    candidates: list[str] = []
+    for raw_line in str(output or "").splitlines():
+        line = _sanitize_log_line(raw_line)
+        if not line:
+            continue
+        lowered = line.lower()
+        if any(marker in lowered for marker in _FAILURE_REASON_MARKERS):
+            candidates.append(line)
+
+    chosen = candidates[-1] if candidates else _sanitize_log_line(fallback)
+    chosen = chosen or str(fallback or "").strip() or "未知错误"
+    chosen = re.sub(r"^\[[^\]]+\]\s*", "", chosen).strip()
+    chosen = re.sub(r"^[❌⚠️]+\s*", "", chosen).strip()
+    return chosen or "未知错误"
+
+
+@contextmanager
+def _capture_stage_output():
+    buffer = io.StringIO()
+    with redirect_stdout(buffer), redirect_stderr(buffer):
+        yield buffer
+
+
+def _print_stage_status(tag: str, stage: str, ok: bool, success_text: str, failure_text: str, reason: str = "") -> None:
+    prefix = f"[{tag}] " if tag else ""
+    if ok:
+        message = f"{prefix}[{stage}] ✅{success_text}"
+    else:
+        detail = f": {reason}" if reason else ""
+        message = f"{prefix}[{stage}] ❌{failure_text}{detail}"
+    with legacy._print_lock:
+        print(message)
 
 
 @dataclass
@@ -59,7 +121,6 @@ class RegistrationEngine:
 
         for index, candidate in enumerate(candidates):
             mailbox_service = build_mailbox_service(register_client, candidate)
-            register_client._print(f"[{candidate}] 初始化邮箱服务...")
             try:
                 mailbox = mailbox_service.create_mailbox()
                 return mailbox_service, mailbox, candidate
@@ -67,9 +128,6 @@ class RegistrationEngine:
                 last_error = error
                 if index >= len(candidates) - 1:
                     raise
-                next_provider = candidates[index + 1]
-                register_client._print(f"[{candidate}] 创建邮箱失败: {error}")
-                register_client._print(f"[fallback] 切换到 {next_provider}...")
 
         if last_error:
             raise last_error
@@ -85,20 +143,11 @@ class RegistrationEngine:
             )
             _email_on_failure = mailbox.email
             register_client.tag = mailbox.email.split("@")[0]
+            account_tag = register_client.tag or str(self.idx)
 
             chatgpt_password = legacy._generate_password()
             name = legacy._random_name()
             birthdate = legacy._random_birthdate()
-
-            with legacy._print_lock:
-                print(f"\n{'=' * 60}")
-                print(f"  [{self.idx}/{self.total}] 注册: {mailbox.email}")
-                print(f"  邮箱服务: {effective_provider}")
-                print(f"  ChatGPT密码: {chatgpt_password}")
-                if mailbox.password:
-                    print(f"  邮箱密码: {mailbox.password}")
-                print(f"  姓名: {name} | 生日: {birthdate}")
-                print(f"{'=' * 60}")
 
             # ===== 使用 protocol_keygen 的纯 HTTP 注册流程 =====
             from protocol_keygen import (
@@ -107,73 +156,102 @@ class RegistrationEngine:
             )
             from sentinel_browser import get_all_sentinel_tokens
 
-            # 一次启动 Playwright 批量生成所有 flow 的 sentinel token
-            register_client._print("[Playwright] 批量生成 sentinel token...")
-            browser_tokens = get_all_sentinel_tokens(
-                proxy=PROXY if PROXY else None,
-            )
-
-            registrar = ProtocolRegistrar(browser_tokens=browser_tokens)
             otp_fetcher = mailbox_service.wait_for_verification_code
+            registration_output = io.StringIO()
+            try:
+                with _capture_stage_output() as registration_output:
+                    browser_tokens = get_all_sentinel_tokens(
+                        proxy=PROXY if PROXY else None,
+                    )
+                    registrar = ProtocolRegistrar(browser_tokens=browser_tokens)
 
-            register_client._print("[Protocol] 步骤0: OAuth 初始化 + 邮箱提交")
-            if not registrar.step0_init_oauth_session(mailbox.email):
-                raise Exception("Protocol 步骤0 失败: OAuth 会话初始化失败")
+                    if not registrar.step0_init_oauth_session(mailbox.email):
+                        raise Exception("OAuth 会话初始化失败")
 
-            time.sleep(1)
+                    time.sleep(1)
 
-            register_client._print("[Protocol] 步骤2: 注册用户")
-            if not registrar.step2_register_user(mailbox.email, chatgpt_password):
-                raise Exception("Protocol 步骤2 失败: 注册用户失败")
+                    if not registrar.step2_register_user(mailbox.email, chatgpt_password):
+                        raise Exception("注册用户失败")
 
-            time.sleep(1)
+                    time.sleep(1)
 
-            register_client._print("[Protocol] 步骤3: 触发 OTP")
-            registrar.step3_send_otp()
+                    registrar.step3_send_otp()
 
-            register_client._print("[Protocol] 等待验证码...")
-            otp_code = otp_fetcher(120)
-            if not otp_code:
-                raise Exception("未能获取验证码")
+                    otp_code = otp_fetcher(120)
+                    if not otp_code:
+                        raise Exception("未能获取验证码")
 
-            register_client._print(f"[Protocol] 步骤4: 验证 OTP ({otp_code})")
-            if not registrar.step4_validate_otp(otp_code):
-                raise Exception("Protocol 步骤4 失败: OTP 验证失败")
+                    if not registrar.step4_validate_otp(otp_code):
+                        raise Exception("OTP 验证失败")
 
-            time.sleep(1)
+                    time.sleep(1)
 
-            first_name, last_name = name.split(" ", 1) if " " in name else (name, "Smith")
-            register_client._print("[Protocol] 步骤5: 创建账号（Playwright sentinel）")
-            if not registrar.step5_create_account(first_name, last_name, birthdate):
-                raise Exception("Protocol 步骤5 失败: 创建账号失败")
+                    first_name, last_name = name.split(" ", 1) if " " in name else (name, "Smith")
+                    if not registrar.step5_create_account(first_name, last_name, birthdate):
+                        raise Exception("创建账号失败")
 
-            register_client._print("[Protocol] 注册成功!")
-            save_account(mailbox.email, chatgpt_password)
+                    save_account(mailbox.email, chatgpt_password)
+            except Exception as error:
+                reason = _extract_stage_failure_reason(registration_output.getvalue(), str(error))
+                _print_stage_status(account_tag, "仅注册", False, "注册成功", "注册失败", reason)
+                return RegistrationResult(
+                    idx=self.idx,
+                    success=False,
+                    provider=provider,
+                    email=_email_on_failure,
+                    error_message=reason,
+                    error_code=_extract_error_code(reason),
+                )
+
+            _print_stage_status(account_tag, "仅注册", True, "注册成功", "注册失败")
 
             oauth_ok = True
             if legacy.ENABLE_OAUTH:
-                register_client._print("[OAuth] 开始获取 Codex Token...")
-                time.sleep(5)
-                tokens = perform_codex_oauth_login_http(
-                    mailbox.email, chatgpt_password,
-                    registrar_session=registrar.session,
-                    cf_token=mailbox.token,
-                )
-                oauth_ok = bool(tokens and tokens.get("access_token"))
-                if oauth_ok:
-                    save_tokens(mailbox.email, tokens)
-                    legacy._save_codex_tokens(mailbox.email, tokens)
-                    register_client._print("[OAuth] Token 已保存")
-                else:
-                    message = "OAuth Token 获取失败"
+                oauth_output = io.StringIO()
+                tokens = None
+                try:
+                    with _capture_stage_output() as oauth_output:
+                        time.sleep(5)
+                        tokens = perform_codex_oauth_login_http(
+                            mailbox.email, chatgpt_password,
+                            registrar_session=registrar.session,
+                            cf_token=mailbox.token,
+                        )
+                    oauth_ok = bool(tokens and tokens.get("access_token"))
+                except Exception as error:
+                    reason = _extract_stage_failure_reason(oauth_output.getvalue(), str(error))
+                    _print_stage_status(account_tag, "Oauth获取token", False, "获取Token成功", "获取失败", reason)
                     if legacy.OAUTH_REQUIRED:
-                        raise Exception(f"{message}（oauth_required=true）")
-                    register_client._print(f"[OAuth] {message}（按配置继续）")
+                        return RegistrationResult(
+                            idx=self.idx,
+                            success=False,
+                            provider=effective_provider,
+                            email=mailbox.email,
+                            email_password=mailbox.password,
+                            error_message=f"OAuth Token 获取失败: {reason}",
+                            error_code=_extract_error_code(reason),
+                        )
+                    oauth_ok = False
+                else:
+                    if oauth_ok:
+                        save_tokens(mailbox.email, tokens)
+                        legacy._save_codex_tokens(mailbox.email, tokens)
+                        _print_stage_status(account_tag, "Oauth获取token", True, "获取Token成功", "获取失败")
+                    else:
+                        reason = _extract_stage_failure_reason(oauth_output.getvalue(), "OAuth Token 获取失败")
+                        _print_stage_status(account_tag, "Oauth获取token", False, "获取Token成功", "获取失败", reason)
+                        if legacy.OAUTH_REQUIRED:
+                            return RegistrationResult(
+                                idx=self.idx,
+                                success=False,
+                                provider=effective_provider,
+                                email=mailbox.email,
+                                email_password=mailbox.password,
+                                error_message=f"OAuth Token 获取失败: {reason}",
+                                error_code=_extract_error_code(reason),
+                            )
 
             self._append_result(mailbox, chatgpt_password, oauth_ok)
-
-            with legacy._print_lock:
-                print(f"\n[OK] [{register_client.tag}] {mailbox.email} 注册成功!")
 
             return RegistrationResult(
                 idx=self.idx,
@@ -185,14 +263,13 @@ class RegistrationEngine:
                 oauth_ok=oauth_ok,
             )
         except Exception as error:
-            with legacy._print_lock:
-                print(f"\n[FAIL] [{self.idx}] 注册失败: {error}")
-                legacy.traceback.print_exc()
+            reason = _extract_stage_failure_reason("", str(error))
+            _print_stage_status(str(self.idx), "仅注册", False, "注册成功", "注册失败", reason)
             return RegistrationResult(
                 idx=self.idx,
                 success=False,
                 provider=provider,
                 email=_email_on_failure,
-                error_message=str(error),
-                error_code=_extract_error_code(str(error)),
+                error_message=reason,
+                error_code=_extract_error_code(reason),
             )

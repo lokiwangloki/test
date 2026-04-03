@@ -2,6 +2,7 @@ import unittest
 import sys
 import types
 import base64
+import io
 import json
 from pathlib import Path
 from unittest import mock
@@ -19,6 +20,32 @@ from ncs_runtime import batch as runtime_batch, email_services, engine as runtim
 
 
 class ProxyNormalizationTests(unittest.TestCase):
+    def test_extract_stage_failure_reason_prefers_specific_failure_line(self):
+        output = "\n".join([
+            "进度: [===>] 10%",
+            "[existing-session] authorize: 302",
+            "❌ 未获取到 authorization code",
+        ])
+
+        reason = runtime_engine._extract_stage_failure_reason(output, "OAuth Token 获取失败")
+
+        self.assertEqual(reason, "未获取到 authorization code")
+
+    def test_run_cpa_upload_with_compact_log_only_prints_terminal_status(self):
+        def fake_upload():
+            print("============================================================")
+            print("  [CPA] 开始上传 3 个账号到 CPA 管理平台")
+            print("  [CPA] 上传完成: 成功 1 个, 失败 2 个")
+
+        output = io.StringIO()
+        with mock.patch.object(ncs_register_legacy, "_upload_all_tokens_to_cpa", side_effect=fake_upload):
+            with mock.patch("sys.stdout", new=output):
+                uploaded, failed, reason = runtime_batch._run_cpa_upload_with_compact_log()
+
+        self.assertEqual((uploaded, failed), (1, 2))
+        self.assertEqual(reason, "成功 1 个, 失败 2 个")
+        self.assertEqual(output.getvalue().strip(), "[CPA上传] ❌上传失败: 成功 1 个, 失败 2 个")
+
     def test_otp_message_ids_are_not_reused_across_calls(self):
         register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)
 
