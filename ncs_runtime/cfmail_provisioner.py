@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import secrets
+import string
 import time
 from typing import Any
 
@@ -18,10 +18,7 @@ MX_RECORDS = (
     ("route2.mx.cloudflare.net", 85),
     ("route3.mx.cloudflare.net", 36),
 )
-
-
-def _utc_stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%m%d%H%M%S")
+_MANAGED_LABEL_LENGTH = 12
 
 
 def _normalize_host(value: str) -> str:
@@ -205,7 +202,7 @@ class CfmailProvisioner:
                 raise RuntimeError(f"PATCH worker settings failed after {attempt + 1} attempts: {last_error}")
 
     def _make_new_label(self) -> str:
-        return f"auto{_utc_stamp()}{secrets.token_hex(2)}"
+        return "".join(secrets.choice(string.ascii_lowercase) for _ in range(_MANAGED_LABEL_LENGTH))
 
     def _new_domain(self, label: str) -> str:
         return f"{label}.{self.settings.zone_name}"
@@ -280,7 +277,14 @@ class CfmailProvisioner:
     def _is_managed_auto_domain(self, domain: str) -> bool:
         domain_key = self._normalize_domain_name(domain)
         zone_suffix = f".{self.settings.zone_name.lower()}"
-        return bool(domain_key) and domain_key.startswith("auto") and domain_key.endswith(zone_suffix)
+        if not domain_key or not domain_key.endswith(zone_suffix):
+            return False
+        label = domain_key[:-len(zone_suffix)]
+        if not label or "." in label:
+            return False
+        if label.startswith("auto"):
+            return True
+        return len(label) == _MANAGED_LABEL_LENGTH and all(char in string.ascii_lowercase for char in label)
 
     def _delete_domain_artifacts(self, domain: str) -> None:
         domain_key = str(domain or "").strip().lower()

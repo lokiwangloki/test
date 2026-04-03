@@ -6,7 +6,7 @@ import ncs_register_legacy as legacy
 
 from .engine import RegistrationEngine
 
-_MAX_CONSECUTIVE_FAILURES = 5
+_MAX_CONSECUTIVE_FAILURES = 30
 
 
 def run_single(idx: int, total: int, proxy: str, output_file: str):
@@ -14,17 +14,18 @@ def run_single(idx: int, total: int, proxy: str, output_file: str):
     return result.success, result.email or None, result.error_code or "", result.error_message or None
 
 
-def _is_cfmail_rotation_failure(error_code: str, error_message: str) -> bool:
-    del error_code
-    message = str(error_message or "").lower()
-    if not message:
-        return False
-    cfmail_markers = (
-        "cfmail",
-        "invalid domain",
-        "没有可用的 cfmail 配置",
-    )
-    return any(marker in message for marker in cfmail_markers)
+def _active_cfmail_accounts_for_domains(active_domains: list[str]) -> list:
+    active_domain_set = {
+        str(domain or "").strip().lower()
+        for domain in active_domains
+        if str(domain or "").strip()
+    }
+    if not active_domain_set:
+        return []
+    return [
+        account for account in legacy.CFMAIL_ACCOUNTS
+        if str(getattr(account, "email_domain", "") or "").strip().lower() in active_domain_set
+    ]
 
 
 def _sync_cfmail_accounts_with_env_credentials(provisioner) -> bool:
@@ -95,6 +96,9 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
     # cfmail 子域名自动配置
     _provisioner = None
     _rotation_lock = threading.Lock()
+    _consec_fail_lock = threading.Lock()
+    _consec_fail_count = [0]
+    _rotation_in_progress = [False]
 
     if provider == "cfmail" and legacy.CFMAIL_PROVISIONING_ENABLED:
         from .cfmail_provisioner import CfmailProvisioner, ProvisioningSettings
@@ -140,14 +144,10 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                 print(f"[cfmail] Worker 当前激活域名: {', '.join(_active_domains) if _active_domains else '无'}")
                 # 重新加载账号
                 legacy._reload_cfmail_accounts_if_needed(force=True)
-                # 仅保留当前 worker 实际激活的 auto 域名，避免旧失效域名继续参与轮询
-                _active_auto_accounts = [
-                    a for a in legacy.CFMAIL_ACCOUNTS
-                    if a.email_domain.startswith("auto") and a.email_domain in _active_domains
-                ]
-                if _active_auto_accounts:
-                    legacy.CFMAIL_ACCOUNTS = _active_auto_accounts
-                    print(f"[cfmail] 注册将使用随机子域名: {', '.join(a.email_domain for a in _active_auto_accounts)}")
+                _active_accounts = _active_cfmail_accounts_for_domains(_active_domains)
+                if _active_accounts:
+                    legacy.CFMAIL_ACCOUNTS = _active_accounts
+                    print(f"[cfmail] 注册将使用随机子域名: {', '.join(a.email_domain for a in _active_accounts)}")
                 else:
                     print(f"[cfmail] 使用现有账号: {', '.join(a.email_domain for a in legacy.CFMAIL_ACCOUNTS)}")
             else:
@@ -156,10 +156,6 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
         except Exception as _norm_err:
             print(f"[cfmail] 随机子域名初始化失败（继续执行原有域名）: {_norm_err}")
             _provisioner = None
-
-    _consec_fail_lock = threading.Lock()
-    _consec_fail_count = [0]
-    _rotation_in_progress = [False]
 
     def _try_rotate_domain() -> None:
         if _provisioner is None:
@@ -178,12 +174,9 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                 _active_domains = list(_pool.get("active_domains") or [])
                 print(f"[cfmail] Worker 当前激活域名: {', '.join(_active_domains) if _active_domains else '无'}")
                 legacy._reload_cfmail_accounts_if_needed(force=True)
-                _active_auto_accounts = [
-                    a for a in legacy.CFMAIL_ACCOUNTS
-                    if a.email_domain.startswith("auto") and a.email_domain in _active_domains
-                ]
-                if _active_auto_accounts:
-                    legacy.CFMAIL_ACCOUNTS = _active_auto_accounts
+                _active_accounts = _active_cfmail_accounts_for_domains(_active_domains)
+                if _active_accounts:
+                    legacy.CFMAIL_ACCOUNTS = _active_accounts
             else:
                 print(f"[cfmail] 域名轮换失败: {result.error}")
         except Exception as _rot_err:
@@ -191,6 +184,20 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
         finally:
             with _rotation_lock:
                 _rotation_in_progress[0] = False
+
+    def _record_failure_and_maybe_rotate() -> None:
+        if _provisioner is None:
+            return
+        with _consec_fail_lock:
+            _consec_fail_count[0] += 1
+            should_rotate = _consec_fail_count[0] >= _MAX_CONSECUTIVE_FAILURES
+            if should_rotate:
+                _consec_fail_count[0] = 0
+        if should_rotate:
+            threading.Thread(
+                target=_try_rotate_domain,
+                daemon=True,
+            ).start()
 
     do_cleanup = cpa_cleanup if cpa_cleanup is not None else legacy.CPA_CLEANUP_ENABLED
     if do_cleanup and legacy.UPLOAD_API_URL:
@@ -237,25 +244,13 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                     else:
                         fail_count += 1
                         print(f"  [账号 {idx}] 失败: {err}")
-                        if _provisioner is not None:
-                            with _consec_fail_lock:
-                                if _is_cfmail_rotation_failure(error_code, err):
-                                    _consec_fail_count[0] += 1
-                                    should_rotate = _consec_fail_count[0] >= _MAX_CONSECUTIVE_FAILURES
-                                    if should_rotate:
-                                        _consec_fail_count[0] = 0
-                                else:
-                                    _consec_fail_count[0] = 0
-                                    should_rotate = False
-                            if should_rotate:
-                                threading.Thread(
-                                    target=_try_rotate_domain,
-                                    daemon=True,
-                                ).start()
+                        del error_code
+                        _record_failure_and_maybe_rotate()
                 except Exception as error:
                     fail_count += 1
                     with legacy._print_lock:
                         print(f"[FAIL] 账号 {idx} 线程异常: {error}")
+                    _record_failure_and_maybe_rotate()
                 finally:
                     completed_count += 1
                     legacy._render_apt_like_progress(
