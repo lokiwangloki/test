@@ -437,7 +437,7 @@ def run_once():
         needed = ACCOUNT_THRESHOLD - count
         print(f"[检测] ⚠️  账号不足！缺口 {needed} 个，触发自动注册...")
         register_params = dict(AUTO_PARAMS)
-        register_params["total_accounts"] = max(1, needed)
+        register_params["total_accounts"] = min(register_params["total_accounts"], max(1, needed))
         success = trigger_registration(register_params, cfg)
         if not success:
             print("[调度] 注册执行失败，本轮以失败结束")
