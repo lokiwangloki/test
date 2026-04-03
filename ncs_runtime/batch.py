@@ -91,25 +91,22 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                     }])
                     print(f"[cfmail] 已写入 base 账号: {_base_email}")
 
-            # 每次都创建新的随机子域名（缓存中的旧 auto 域名 Worker 绑定可能已失效）
+            # 创建新随机子域名
             _rot = _provisioner.rotate_active_domain(skip_smoke=True)
             if _rot.success:
                 print(f"[cfmail] 随机子域名已创建: {_rot.new_domain}")
-                print("[cfmail] 等待 60 秒让 CF Workers 绑定生效...")
-                time.sleep(60)
+                print("[cfmail] 等待 90 秒让 CF Workers 绑定生效...")
+                time.sleep(90)
+                # 重新加载账号
+                legacy._reload_cfmail_accounts_if_needed(force=True)
+                # 优先使用 auto 随机子域名账号，保留 default 作为 fallback
+                _auto_accounts = [a for a in legacy.CFMAIL_ACCOUNTS if a.email_domain.startswith("auto")]
+                if _auto_accounts:
+                    print(f"[cfmail] 注册将使用随机子域名: {', '.join(a.email_domain for a in _auto_accounts)}")
+                else:
+                    print(f"[cfmail] 使用现有账号: {', '.join(a.email_domain for a in legacy.CFMAIL_ACCOUNTS)}")
             else:
-                print(f"[cfmail] 随机子域名创建失败: {_rot.error}，将继续使用现有域名")
-
-            # 强制重新加载账号，让注册流程使用新域名
-            legacy._reload_cfmail_accounts_if_needed(force=True)
-
-            # 优先使用 auto 随机子域名账号
-            _auto_accounts = [a for a in legacy.CFMAIL_ACCOUNTS if a.email_domain.startswith("auto")]
-            if _auto_accounts:
-                legacy.CFMAIL_ACCOUNTS = _auto_accounts
-                print(f"[cfmail] 注册将使用随机子域名: {', '.join(a.email_domain for a in _auto_accounts)}")
-            else:
-                print(f"[cfmail] 未找到 auto 账号，使用现有账号: {', '.join(a.email_domain for a in legacy.CFMAIL_ACCOUNTS)}")
+                print(f"[cfmail] 随机子域名创建失败: {_rot.error}，将使用现有域名")
 
         except Exception as _norm_err:
             print(f"[cfmail] 随机子域名初始化失败（继续执行原有域名）: {_norm_err}")
