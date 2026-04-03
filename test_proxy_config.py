@@ -13,6 +13,7 @@ sys.modules.setdefault("curl_cffi", fake_curl_cffi)
 
 import ncs_register
 import ncs_register_legacy
+import protocol_keygen
 from ncs_runtime import batch as runtime_batch, email_services, engine as runtime_engine
 
 
@@ -121,6 +122,9 @@ class ProxyNormalizationTests(unittest.TestCase):
     def test_auto_scheduler_defaults_target_1000_accounts(self):
         self.assertEqual(auto_scheduler.ACCOUNT_THRESHOLD, 1000)
         self.assertEqual(auto_scheduler.AUTO_PARAMS["total_accounts"], 1000)
+
+    def test_auto_scheduler_uploads_each_success_immediately_by_default(self):
+        self.assertEqual(auto_scheduler.AUTO_PARAMS["cpa_upload_every_n"], 1)
 
     def test_run_once_registers_only_missing_gap(self):
         cfg = {"upload_api_url": "", "upload_api_token": ""}
@@ -506,6 +510,117 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         self.assertEqual(rotate_kwargs, [{}])
 
+    def test_run_batch_uploads_after_each_success_when_threshold_is_one(self):
+        class FakeFuture:
+            def __init__(self, result):
+                self._result = result
+
+            def result(self):
+                return self._result
+
+        class FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                del args, kwargs
+                self._results = [
+                    (True, "ok-1@example.com", "", None),
+                    (True, "ok-2@example.com", "", None),
+                ]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                del fn, args, kwargs
+                return FakeFuture(self._results.pop(0))
+
+        with mock.patch.object(ncs_register_legacy, "MAIL_PROVIDER", "tempmail_lol"):
+            with mock.patch.object(ncs_register_legacy, "ENABLE_OAUTH", False):
+                with mock.patch.object(ncs_register_legacy, "UPLOAD_API_URL", "https://cpa.example.com"):
+                    with mock.patch.object(runtime_batch, "ThreadPoolExecutor", FakeExecutor):
+                        with mock.patch.object(runtime_batch, "wait", side_effect=lambda futures, return_when=None: ({next(iter(futures))}, set())):
+                            with mock.patch.object(ncs_register_legacy, "_upload_all_tokens_to_cpa") as upload_mock:
+                                ok = runtime_batch.run_batch(total_accounts=2, max_workers=1, cpa_upload_every_n=1)
+
+        self.assertTrue(ok)
+        self.assertEqual(upload_mock.call_count, 2)
+
+    def test_run_batch_does_not_rotate_cfmail_domains_for_oauth_failures(self):
+        rotate_kwargs = []
+
+        class FakeProvisioner:
+            def __init__(self, *args, **kwargs):
+                del args, kwargs
+
+            def _load_all_accounts(self):
+                return [
+                    {
+                        "name": "cached-auto",
+                        "worker_domain": "worker.example.com",
+                        "email_domain": "auto-live.example.com",
+                        "admin_password": "stale-secret",
+                        "enabled": True,
+                    }
+                ]
+
+            def _write_accounts(self, accounts):
+                self.accounts = accounts
+
+            def rotate_active_domain(self, **kwargs):
+                rotate_kwargs.append(dict(kwargs))
+                return types.SimpleNamespace(success=False, error="skip")
+
+            def normalize_to_domain_pool(self, target_count):
+                del target_count
+                return {"active_domains": []}
+
+        class FakeFuture:
+            def result(self):
+                return False, None, "", "OAuth Token 获取失败（oauth_required=true）"
+
+        class FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                del args, kwargs
+                self.future = FakeFuture()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                del fn, args, kwargs
+                return self.future
+
+        fake_account = ncs_register_legacy.CfmailAccount(
+            name="default",
+            worker_domain="worker.example.com",
+            email_domain="base.example.com",
+            admin_password="secret",
+        )
+
+        with mock.patch.object(ncs_register_legacy, "MAIL_PROVIDER", "cfmail"):
+            with mock.patch.object(ncs_register_legacy, "CFMAIL_ACCOUNTS", [fake_account]):
+                with mock.patch.object(ncs_register_legacy, "CFMAIL_PROVISIONING_ENABLED", True):
+                    with mock.patch.object(ncs_register_legacy, "CFMAIL_WORKER_DOMAIN", "worker.example.com"):
+                        with mock.patch.object(ncs_register_legacy, "CFMAIL_ADMIN_PASSWORD", "secret"):
+                            with mock.patch.object(ncs_register_legacy, "CFMAIL_EMAIL_DOMAIN", "base.example.com"):
+                                with mock.patch.object(ncs_register_legacy, "CF_ZONE_NAME", "example.com"):
+                                    with mock.patch.object(ncs_register_legacy, "ENABLE_OAUTH", True):
+                                        with mock.patch.object(ncs_register_legacy, "UPLOAD_API_URL", ""):
+                                            with mock.patch.object(runtime_batch, "ThreadPoolExecutor", FakeExecutor):
+                                                with mock.patch.object(runtime_batch, "wait", side_effect=lambda futures, return_when=None: (set(futures), set())):
+                                                    with mock.patch("ncs_runtime.cfmail_provisioner.CfmailProvisioner", FakeProvisioner):
+                                                        with mock.patch("ncs_runtime.cfmail_provisioner.ProvisioningSettings") as settings_cls:
+                                                            settings_cls.return_value = object()
+                                                            with mock.patch("time.sleep", return_value=None):
+                                                                runtime_batch.run_batch(total_accounts=5, max_workers=1)
+
+        self.assertEqual(rotate_kwargs, [{}])
+
     def test_wildmail_service_creates_mailbox_via_register_client(self):
         register_client = mock.Mock()
         register_client.create_wildmail_email.return_value = ("wild@example.com", "", "wild-token")
@@ -664,6 +779,28 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(tokens, {"access_token": "session-token"})
         register.perform_codex_oauth_login_http.assert_called_once()
         register.fetch_chatgpt_session_tokens.assert_called_once_with("user@example.com")
+
+    def test_perform_codex_oauth_login_http_reuses_registrar_session_before_fresh_login(self):
+        registrar_session = mock.Mock()
+        registrar_session.get.return_value = types.SimpleNamespace(
+            status_code=302,
+            headers={"Location": "http://localhost:1455/auth/callback?code=code-123&state=state-123"},
+            url="https://auth.openai.com/oauth/authorize",
+            text="",
+        )
+
+        with mock.patch("protocol_keygen.generate_pkce", return_value=("verifier-123", "challenge-123")):
+            with mock.patch("protocol_keygen.secrets.token_urlsafe", return_value="state-123"):
+                with mock.patch("protocol_keygen.codex_exchange_code", return_value={"access_token": "token-xyz"}) as exchange_mock:
+                    with mock.patch("protocol_keygen.create_session", side_effect=AssertionError("fresh session should not be used")):
+                        tokens = protocol_keygen.perform_codex_oauth_login_http(
+                            "user@example.com",
+                            "Password-1!",
+                            registrar_session=registrar_session,
+                        )
+
+        self.assertEqual(tokens, {"access_token": "token-xyz"})
+        exchange_mock.assert_called_once_with("code-123", "verifier-123")
 
     def test_run_register_does_not_treat_auth_authorize_url_with_chatgpt_redirect_query_as_complete(self):
         register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)

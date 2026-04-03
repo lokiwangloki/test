@@ -83,7 +83,7 @@ def _load_config():
         "upload_api_token": "",
         "upload_api_proxy": "",
         "cpa_cleanup_enabled": True,
-        "cpa_upload_every_n": 3,
+        "cpa_upload_every_n": 1,
         "batch_mode": "pipeline",
         "task_launch_interval_min_seconds": 1,
         "task_launch_interval_max_seconds": 3,
@@ -197,7 +197,7 @@ UPLOAD_API_URL = _CONFIG["upload_api_url"]
 UPLOAD_API_TOKEN = _CONFIG["upload_api_token"]
 UPLOAD_API_PROXY = str(_CONFIG.get("upload_api_proxy", "") or "").strip()
 CPA_CLEANUP_ENABLED = _as_bool(_CONFIG.get("cpa_cleanup_enabled", True))
-CPA_UPLOAD_EVERY_N = max(1, int(_CONFIG.get("cpa_upload_every_n", 3) or 3))
+CPA_UPLOAD_EVERY_N = max(1, int(_CONFIG.get("cpa_upload_every_n", 1) or 1))
 MAIL_PROVIDER = str(_CONFIG.get("mail_provider", "cfmail")).strip().lower()
 CF_AUTH_EMAIL = str(_CONFIG.get("cf_auth_email", "") or "").strip()
 CF_AUTH_KEY = str(_CONFIG.get("cf_auth_key", "") or "").strip()
@@ -3573,7 +3573,7 @@ def _register_one(idx, total, proxy, output_file):
     return result.success, result.email or None, result.error_message or None
 
 def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
-              max_workers=3, proxy=None, cpa_cleanup=None, cpa_upload_every_n: int = 3):
+              max_workers=3, proxy=None, cpa_cleanup=None, cpa_upload_every_n: int = 1):
     """并发批量注册"""
     provider = MAIL_PROVIDER
 
@@ -3680,9 +3680,8 @@ def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
         print(f"  结果文件: {output_file}")
     print(f"{'#' * 60}")
 
-    if success_count > 0:
-        if UPLOAD_API_URL and since_last_upload > 0:
-            print(f"\n[CPA] 收尾上传剩余 {since_last_upload} 个成功账号对应 token...")
+    if success_count > 0 and UPLOAD_API_URL and since_last_upload > 0:
+        print(f"\n[CPA] 收尾上传剩余 {since_last_upload} 个成功账号对应 token...")
         _upload_all_tokens_to_cpa()
 
 def main():

@@ -14,6 +14,19 @@ def run_single(idx: int, total: int, proxy: str, output_file: str):
     return result.success, result.email or None, result.error_code or "", result.error_message or None
 
 
+def _is_cfmail_rotation_failure(error_code: str, error_message: str) -> bool:
+    del error_code
+    message = str(error_message or "").lower()
+    if not message:
+        return False
+    cfmail_markers = (
+        "cfmail",
+        "invalid domain",
+        "没有可用的 cfmail 配置",
+    )
+    return any(marker in message for marker in cfmail_markers)
+
+
 def _sync_cfmail_accounts_with_env_credentials(provisioner) -> bool:
     worker_domain = legacy._normalize_host(legacy.CFMAIL_WORKER_DOMAIN)
     admin_password = str(legacy.CFMAIL_ADMIN_PASSWORD or "").strip()
@@ -42,7 +55,7 @@ def _sync_cfmail_accounts_with_env_credentials(provisioner) -> bool:
 
 def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.txt",
               max_workers: int = 3, proxy: str = None, cpa_cleanup=None,
-              cpa_upload_every_n: int = 3):
+              cpa_upload_every_n: int = 1):
     provider = legacy.MAIL_PROVIDER
     if provider == "cfmail" and not legacy.CFMAIL_ACCOUNTS:
         print("❌ 错误: mail_provider=cfmail 但未找到可用的 cfmail 配置")
@@ -226,10 +239,14 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                         print(f"  [账号 {idx}] 失败: {err}")
                         if _provisioner is not None:
                             with _consec_fail_lock:
-                                _consec_fail_count[0] += 1
-                                should_rotate = _consec_fail_count[0] >= _MAX_CONSECUTIVE_FAILURES
-                                if should_rotate:
+                                if _is_cfmail_rotation_failure(error_code, err):
+                                    _consec_fail_count[0] += 1
+                                    should_rotate = _consec_fail_count[0] >= _MAX_CONSECUTIVE_FAILURES
+                                    if should_rotate:
+                                        _consec_fail_count[0] = 0
+                                else:
                                     _consec_fail_count[0] = 0
+                                    should_rotate = False
                             if should_rotate:
                                 threading.Thread(
                                     target=_try_rotate_domain,
@@ -258,9 +275,8 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
         print(f"  结果文件: {output_file}")
     print(f"{'#' * 60}")
 
-    if success_count > 0:
-        if legacy.UPLOAD_API_URL and since_last_upload > 0:
-            print(f"\n[CPA] 收尾上传剩余 {since_last_upload} 个成功账号对应 token...")
+    if success_count > 0 and legacy.UPLOAD_API_URL and since_last_upload > 0:
+        print(f"\n[CPA] 收尾上传剩余 {since_last_upload} 个成功账号对应 token...")
         legacy._upload_all_tokens_to_cpa()
 
     return success_count > 0

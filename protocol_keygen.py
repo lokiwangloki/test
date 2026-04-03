@@ -50,7 +50,7 @@ import base64
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlparse, parse_qs, urlencode, quote
+from urllib.parse import urlparse, parse_qs, urlencode, quote, urljoin
 
 from curl_cffi import requests as curl_requests
 
@@ -660,6 +660,139 @@ def wait_for_verification_code(session, email, cf_token, timeout=300):
     return None
 
 
+def _extract_authorization_code_from_url(candidate_url):
+    raw = str(candidate_url or "").strip()
+    if not raw or "code=" not in raw:
+        return None
+    try:
+        query = parse_qs(urlparse(raw).query)
+    except Exception:
+        return None
+    code = str((query.get("code") or [""])[0] or "").strip()
+    return code or None
+
+
+def _build_codex_session_tokens_from_session_data(email, session_data):
+    access_token = str((session_data or {}).get("accessToken") or "").strip()
+    if not access_token:
+        return None
+
+    workspace_id = str(email or "").split("@", 1)[0]
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(days=10)
+    return {
+        "id_token": access_token,
+        "access_token": access_token,
+        "refresh_token": "",
+        "account_id": workspace_id,
+        "last_refresh": now.isoformat(),
+        "email": email,
+        "type": "codex",
+        "expired": expires_at.isoformat(),
+    }
+
+
+def _follow_existing_session_redirects_for_code(session, start_url, max_hops=8):
+    current_url = str(start_url or "").strip()
+    for _ in range(max_hops):
+        if not current_url:
+            return None
+        direct_code = _extract_authorization_code_from_url(current_url)
+        if direct_code:
+            return direct_code
+        try:
+            response = session.get(
+                current_url,
+                headers=NAVIGATE_HEADERS,
+                allow_redirects=False,
+                verify=False,
+                timeout=15,
+            )
+        except Exception as exc:
+            matched = re.search(r"(https?://localhost[^\s'\"\\]+)", str(exc))
+            if matched:
+                return _extract_authorization_code_from_url(matched.group(1))
+            return None
+        response_code = _extract_authorization_code_from_url(str(getattr(response, "url", "") or ""))
+        if response_code:
+            return response_code
+        if response.status_code not in (301, 302, 303, 307, 308):
+            return None
+        location = str(response.headers.get("Location") or "").strip()
+        if not location:
+            return None
+        current_url = urljoin(current_url, location)
+    return None
+
+
+def _try_registrar_session_oauth(email, registrar_session, authorize_url, code_verifier):
+    if registrar_session is None:
+        return None
+
+    print("  [existing-session] 尝试复用注册会话获取 token...")
+
+    auth_code = None
+    try:
+        response = registrar_session.get(
+            authorize_url,
+            headers=NAVIGATE_HEADERS,
+            allow_redirects=False,
+            verify=False,
+            timeout=30,
+        )
+        print(f"  [existing-session] authorize: {response.status_code}")
+        location = str(response.headers.get("Location") or "").strip()
+        auth_code = _extract_authorization_code_from_url(location)
+        if not auth_code and location:
+            auth_code = _follow_existing_session_redirects_for_code(
+                registrar_session,
+                urljoin(authorize_url, location),
+            )
+        if not auth_code:
+            auth_code = _extract_authorization_code_from_url(str(getattr(response, "url", "") or ""))
+    except Exception as exc:
+        matched = re.search(r"(https?://localhost[^\s'\"\\]+)", str(exc))
+        if matched:
+            auth_code = _extract_authorization_code_from_url(matched.group(1))
+        else:
+            print(f"  [existing-session] authorize 失败: {exc}")
+
+    if auth_code:
+        print("  [existing-session] ✅ 获取到 authorization code")
+        tokens = codex_exchange_code(auth_code, code_verifier)
+        if tokens:
+            print("  [existing-session] ✅ 使用注册会话换取 token 成功")
+            return tokens
+        print("  [existing-session] code 交换失败，继续尝试 session endpoint")
+
+    try:
+        session_response = registrar_session.get(
+            "https://chatgpt.com/api/auth/session",
+            headers={
+                "accept": "application/json",
+                "referer": "https://chatgpt.com/",
+            },
+            allow_redirects=True,
+            verify=False,
+            timeout=15,
+        )
+        print(f"  [existing-session] session endpoint: {session_response.status_code}")
+        if session_response.status_code == 200:
+            try:
+                session_data = session_response.json()
+            except Exception:
+                session_data = {}
+            tokens = _build_codex_session_tokens_from_session_data(email, session_data)
+            if tokens:
+                print("  [existing-session] ✅ 直接从 session endpoint 获取到 token")
+                return tokens
+    except Exception as exc:
+        print(f"  [existing-session] session endpoint 失败: {exc}")
+
+    print("  [existing-session] 未能直接获取 token，回退 fresh login")
+    return None
+
+
 # =================== 协议注册核心流程（纯 HTTP，零浏览器） ===================
 
 class ProtocolRegistrar:
@@ -1190,13 +1323,7 @@ def perform_codex_oauth_login_http(email, password, registrar_session=None, cf_t
         dict: tokens 字典（含 access_token/refresh_token/id_token），失败返回 None
     """
     print("\n🔐 执行 Codex OAuth 登录（纯 HTTP 模式）...")
-
-    session = create_session()
     device_id = generate_device_id()
-
-    # 在 session 中设置 oai-did cookie（两种 domain 格式兼容）
-    session.cookies.set("oai-did", device_id, domain=".auth.openai.com")
-    session.cookies.set("oai-did", device_id, domain="auth.openai.com")
 
     # 生成 PKCE 参数和 state
     code_verifier, code_challenge = generate_pkce()
@@ -1212,6 +1339,16 @@ def perform_codex_oauth_login_http(email, password, registrar_session=None, cf_t
         "state": state,
     }
     authorize_url = f"{OAUTH_ISSUER}/oauth/authorize?{urlencode(authorize_params)}"
+
+    tokens = _try_registrar_session_oauth(email, registrar_session, authorize_url, code_verifier)
+    if tokens:
+        return tokens
+
+    session = create_session()
+
+    # 在 session 中设置 oai-did cookie（两种 domain 格式兼容）
+    session.cookies.set("oai-did", device_id, domain=".auth.openai.com")
+    session.cookies.set("oai-did", device_id, domain="auth.openai.com")
 
     # ===== 步骤1: GET /oauth/authorize（带 403 重试） =====
     max_retries = 3

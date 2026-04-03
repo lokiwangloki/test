@@ -1,7 +1,7 @@
 """
 auto_scheduler.py - 自动调度器
 每1小时检测有效账号数量（通过实际探测 401/403 判定无效），
-当有效数量 < 100 时自动触发 ncs_register.py 批量注册。
+当有效数量 < 1000 时自动触发 ncs_register.py 批量注册。
 """
 
 import os
@@ -27,9 +27,9 @@ AUTO_PARAMS = {
     "preflight": "n",                   # 是否执行启动前预检: "y" 或 "n"（调度建议 n，避免交互阻塞）
     "cpa_cleanup": "n",                 # 注册前是否清理 CPA 无效号: "y" 或 "n"
                                         # （调度器自己已经做了探测+删除，建议设 "n" 避免重复）
-    "total_accounts": 100,              # 调试中，暂改为 100
+    "total_accounts": 1000,             # 默认直接补足阈值缺口
     "max_workers": 3,                   # 并发数
-    "cpa_upload_every_n": 3,            # 每成功 N 个账号触发一次 CPA 上传
+    "cpa_upload_every_n": 1,            # 成功一个即上传一个
 }
 
 # 探测配置
@@ -377,7 +377,7 @@ def build_register_input(params: dict, cfg: dict) -> str:
     if cfg.get("upload_api_url", "").strip():
         lines.append(params.get("cpa_cleanup", "n"))
 
-    lines.append(str(params.get("cpa_upload_every_n", 3)))
+    lines.append(str(params.get("cpa_upload_every_n", 1)))
 
     return "\n".join(lines) + "\n"
 
