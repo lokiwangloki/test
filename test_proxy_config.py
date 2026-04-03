@@ -52,6 +52,18 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         self.assertEqual(reason, "OAuth 授权请求失败: timed out")
 
+    def test_extract_stage_failure_reason_strips_nested_stage_prefix(self):
+        output = "[tmpuser] [仅注册] ❌注册失败: 未能获取验证码"
+
+        reason = runtime_engine._extract_stage_failure_reason(output, "OAuth Token 获取失败")
+
+        self.assertEqual(reason, "未能获取验证码")
+
+    def test_progress_uses_line_mode_in_github_actions(self):
+        with mock.patch.dict("os.environ", {"GITHUB_ACTIONS": "true"}, clear=False):
+            with mock.patch("sys.stdout.isatty", return_value=True):
+                self.assertFalse(ncs_register_legacy._progress_uses_inline_mode())
+
     def test_run_cpa_upload_with_compact_log_only_prints_terminal_status(self):
         def fake_upload():
             print("============================================================")
@@ -278,6 +290,10 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIn("active_domain", workflow)
         self.assertIn("item.get('enabled', True)", workflow)
         self.assertIn("ed = active_domain or os.environ.get('CFMAIL_EMAIL_DOMAIN','').strip()", workflow)
+
+    def test_scheduler_workflow_caps_cfmail_startup_domain_pool_for_8_workers(self):
+        workflow = Path(".github/workflows/scheduler.yml").read_text(encoding="utf-8")
+        self.assertIn("ZHUCE6_CFMAIL_ACTIVE_DOMAIN_COUNT: 2", workflow)
 
     def test_scheduler_workflow_does_not_block_cfmail_on_wildmail_diagnose(self):
         workflow = Path(".github/workflows/scheduler.yml").read_text(encoding="utf-8")

@@ -230,10 +230,25 @@ _progress_state = {
     "success": 0,
     "fail": 0,
     "start_time": 0.0,
+    "last_line_done": -1,
+    "last_line_at": 0.0,
 }
 
 
+def _progress_uses_inline_mode() -> bool:
+    if str(os.getenv("GITHUB_ACTIONS", "")).strip():
+        return False
+    if str(os.getenv("CI", "")).strip():
+        return False
+    try:
+        return bool(sys.stdout.isatty())
+    except Exception:
+        return False
+
+
 def _clear_progress_line_unlocked():
+    if not _progress_uses_inline_mode():
+        return
     cols = shutil.get_terminal_size((110, 20)).columns
     _original_print("\r" + " " * max(10, cols - 1) + "\r", end="", flush=True)
 
@@ -271,18 +286,31 @@ def _render_apt_like_progress(done: int, total: int, success: int, fail: int, st
         else:
             bar = "=" * (filled - 1) + ">" + " " * (bar_width - filled)
 
-        line = f"\r进度: [{bar}]" + right_text
-        _original_print(line, end="", flush=True)
+        inline_mode = _progress_uses_inline_mode()
+        line = f"进度: [{bar}]" + right_text
+        if inline_mode:
+            _original_print("\r" + line, end="", flush=True)
+            return
+
+        last_done = int(_progress_state.get("last_line_done", -1) or -1)
+        now = time.time()
+        should_emit = done != last_done or done >= total or done == 0
+        if not should_emit:
+            return
+        _progress_state["last_line_done"] = done
+        _progress_state["last_line_at"] = now
+        _original_print(line, flush=True)
 
 
 def _print_with_progress(*args, **kwargs):
     with _print_lock:
-        if _progress_state["active"]:
+        inline_mode = _progress_uses_inline_mode()
+        if inline_mode and _progress_state["active"]:
             _clear_progress_line_unlocked()
 
         _original_print(*args, **kwargs)
 
-        if _progress_state["active"]:
+        if inline_mode and _progress_state["active"]:
             _render_apt_like_progress(
                 _progress_state["done"],
                 _progress_state["total"],

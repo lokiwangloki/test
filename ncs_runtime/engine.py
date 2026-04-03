@@ -113,8 +113,9 @@ def _extract_stage_failure_reason(output: str, fallback: str = "") -> str:
     else:
         chosen = _sanitize_log_line(fallback)
     chosen = chosen or str(fallback or "").strip() or "未知错误"
-    chosen = re.sub(r"^\[[^\]]+\]\s*", "", chosen).strip()
+    chosen = re.sub(r"^(?:\[[^\]]+\]\s*)+", "", chosen).strip()
     chosen = re.sub(r"^[❌⚠️]+\s*", "", chosen).strip()
+    chosen = re.sub(r"^(?:注册失败|获取失败)\s*:\s*", "", chosen).strip()
     return chosen or "未知错误"
 
 

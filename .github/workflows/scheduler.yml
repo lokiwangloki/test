@@ -126,6 +126,7 @@ jobs:
         env:
           PYTHONUNBUFFERED: 1
           MAIL_PROVIDER: cfmail
+          ZHUCE6_CFMAIL_ACTIVE_DOMAIN_COUNT: 2
           CFMAIL_WORKER_DOMAIN: ${{ secrets.CFMAIL_WORKER_DOMAIN }}
           CFMAIL_EMAIL_DOMAIN: ${{ secrets.CFMAIL_EMAIL_DOMAIN }}
           CFMAIL_ADMIN_PASSWORD: ${{ secrets.CFMAIL_ADMIN_PASSWORD }}
