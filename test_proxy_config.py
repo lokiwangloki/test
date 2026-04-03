@@ -35,12 +35,12 @@ class ProxyNormalizationTests(unittest.TestCase):
         output = "\n".join([
             "[existing-session] authorize: 302",
             "[existing-session] session endpoint: 200",
-            "[existing-session] 未能直接获取 token，回退 fresh login",
+            "[existing-session] 未能直接获取 token，回退浏览器辅助登录",
         ])
 
         reason = runtime_engine._extract_stage_failure_reason(output, "OAuth Token 获取失败")
 
-        self.assertEqual(reason, "未能直接获取 token，回退 fresh login")
+        self.assertEqual(reason, "未能直接获取 token，回退浏览器辅助登录")
 
     def test_extract_stage_failure_reason_prefers_specific_transport_error_over_retry_summary(self):
         output = "\n".join([
@@ -1319,6 +1319,123 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIn(
             ("GET", "https://auth.openai.com/api/accounts/client_auth_session_dump", mock.ANY),
             registrar_session.calls,
+        )
+
+    def test_perform_codex_oauth_login_http_fresh_login_prefers_playwright_sentinel_tokens(self):
+        class FakeCookies(dict):
+            def __init__(self):
+                super().__init__()
+                self.jar = []
+
+            def set(self, name, value, domain=""):
+                del domain
+                self[name] = value
+
+        class FakeResponse:
+            def __init__(self, status_code, *, headers=None, url="", text="", json_data=None):
+                self.status_code = status_code
+                self.headers = headers or {}
+                self.url = url
+                self.text = text
+                self._json_data = json_data
+
+            def json(self):
+                if self._json_data is None:
+                    raise ValueError("no json")
+                return self._json_data
+
+        class FakeSession:
+            def __init__(self):
+                self.cookies = FakeCookies()
+                self.calls = []
+
+            def get(self, url, **kwargs):
+                snapshot = dict(kwargs)
+                if isinstance(snapshot.get("headers"), dict):
+                    snapshot["headers"] = dict(snapshot["headers"])
+                self.calls.append(("GET", url, snapshot))
+                if url.startswith("https://auth.openai.com/oauth/authorize"):
+                    self.cookies["login_session"] = "login-cookie"
+                    return FakeResponse(200, url="https://auth.openai.com/log-in", text="<html></html>")
+                if url == "https://auth.openai.com/sign-in-with-chatgpt/codex/consent":
+                    return FakeResponse(
+                        302,
+                        url=url,
+                        headers={
+                            "Location": "http://localhost:1455/auth/callback?code=code-browser&state=state-123",
+                        },
+                    )
+                raise AssertionError(f"unexpected GET: {url}")
+
+            def post(self, url, **kwargs):
+                snapshot = dict(kwargs)
+                if isinstance(snapshot.get("headers"), dict):
+                    snapshot["headers"] = dict(snapshot["headers"])
+                self.calls.append(("POST", url, snapshot))
+                if url == "https://auth.openai.com/api/accounts/authorize/continue":
+                    return FakeResponse(
+                        200,
+                        url=url,
+                        json_data={"continue_url": "/log-in/password", "page": {"type": "password"}},
+                    )
+                if url == "https://auth.openai.com/api/accounts/password/verify":
+                    return FakeResponse(
+                        200,
+                        url=url,
+                        json_data={
+                            "continue_url": "/sign-in-with-chatgpt/codex/consent",
+                            "page": {"type": "consent"},
+                        },
+                    )
+                raise AssertionError(f"unexpected POST: {url}")
+
+        fake_session = FakeSession()
+        mail_session = mock.Mock()
+        browser_tokens = {
+            "authorize_continue": '{"flow":"authorize_continue","c":"browser-ac"}',
+            "password_verify": '{"flow":"password_verify","c":"browser-pwd"}',
+            "email_otp_validate": '{"flow":"email_otp_validate","c":"browser-otp"}',
+            "oauth_create_account": '{"flow":"oauth_create_account","c":"browser-create"}',
+        }
+
+        with mock.patch("protocol_keygen._try_registrar_session_oauth", return_value=None):
+            with mock.patch("protocol_keygen.generate_pkce", return_value=("verifier-123", "challenge-123")):
+                with mock.patch("protocol_keygen.secrets.token_urlsafe", return_value="state-123"):
+                    with mock.patch("protocol_keygen.create_session", side_effect=[fake_session, mail_session]):
+                        with mock.patch(
+                            "protocol_keygen._load_oauth_browser_tokens",
+                            return_value=browser_tokens,
+                            create=True,
+                        ) as browser_mock:
+                            with mock.patch("protocol_keygen.codex_exchange_code", return_value={"access_token": "token-browser"}) as exchange_mock:
+                                with mock.patch("protocol_keygen.build_sentinel_token", side_effect=AssertionError("pure http sentinel should not be used")):
+                                    tokens = protocol_keygen.perform_codex_oauth_login_http(
+                                        "user@example.com",
+                                        "Password-1!",
+                                        registrar_session=mock.Mock(),
+                                        cf_token=None,
+                                    )
+
+        self.assertEqual(tokens, {"access_token": "token-browser"})
+        browser_mock.assert_called_once()
+        exchange_mock.assert_called_once_with("code-browser", "verifier-123")
+
+        authorize_call = next(
+            call for call in fake_session.calls
+            if call[0] == "POST" and call[1] == "https://auth.openai.com/api/accounts/authorize/continue"
+        )
+        self.assertEqual(
+            authorize_call[2]["headers"]["openai-sentinel-token"],
+            browser_tokens["authorize_continue"],
+        )
+
+        password_call = next(
+            call for call in fake_session.calls
+            if call[0] == "POST" and call[1] == "https://auth.openai.com/api/accounts/password/verify"
+        )
+        self.assertEqual(
+            password_call[2]["headers"]["openai-sentinel-token"],
+            browser_tokens["password_verify"],
         )
 
     def test_protocol_registrar_step0_falls_back_to_browser_bootstrap_when_authorize_blocked(self):

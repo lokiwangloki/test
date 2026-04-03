@@ -34,6 +34,7 @@ _DIAGNOSTIC_REASON_MARKERS = (
     "session endpoint",
     "未能直接获取 token",
     "回退 fresh login",
+    "回退浏览器辅助登录",
     "未获得 login_session",
     "login_session: ❌",
     "login_session: n",
