@@ -427,7 +427,9 @@ class CfmailProvisioner:
         required_successes = 3
         success_streak = 0
         last_error = "smoke test did not run"
-        for attempt in range(1, 10):
+        # Cloudflare Workers 配置变更传播通常需要 30-60 秒
+        time.sleep(45)
+        for attempt in range(1, 15):
             response = cffi_requests.post(
                 f"https://{_normalize_host(worker_domain)}/admin/new_address",
                 headers={
