@@ -293,6 +293,71 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(accounts[0].worker_domain, "tmpemail.lokiw.dpdns.org")
         self.assertEqual(accounts[0].email_domain, "wocaoniubi.lokiw.dpdns.org")
 
+    def test_create_cfmail_email_uses_direct_egress_like_reference_project(self):
+        register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)
+        register.proxy = "socks5://127.0.0.1:7890"
+        register.impersonate = "chrome"
+        register._cfmail_api_base = ""
+        register._cfmail_account_name = ""
+        register._cfmail_mail_token = ""
+        register._print = mock.Mock()
+
+        account = ncs_register_legacy.CfmailAccount(
+            name="cfmail-auto",
+            worker_domain="worker.example.com",
+            email_domain="auto.example.com",
+            admin_password="secret",
+        )
+
+        class FakeResponse:
+            status_code = 200
+            content = b'{"address":"user@auto.example.com","jwt":"jwt-token"}'
+            text = '{"address":"user@auto.example.com","jwt":"jwt-token"}'
+
+            @staticmethod
+            def json():
+                return {"address": "user@auto.example.com", "jwt": "jwt-token"}
+
+        with mock.patch("ncs_register_legacy._reload_cfmail_accounts_if_needed", return_value=False):
+            with mock.patch("ncs_register_legacy._select_cfmail_account", return_value=account):
+                with mock.patch("ncs_register_legacy.curl_requests.post", return_value=FakeResponse(), create=True) as post_mock:
+                    email, password, token = register.create_cfmail_email()
+
+        self.assertEqual(email, "user@auto.example.com")
+        self.assertEqual(password, "")
+        self.assertEqual(token, "jwt-token")
+        self.assertIsNone(post_mock.call_args.kwargs["proxies"])
+
+    def test_fetch_emails_cfmail_uses_direct_egress_like_reference_project(self):
+        register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)
+        register.proxy = "socks5://127.0.0.1:7890"
+        register.impersonate = "chrome"
+        register._cfmail_api_base = "https://worker.example.com"
+
+        class FakeResponse:
+            status_code = 200
+            content = b'{"results":[{"id":"mail-1","address":"user@auto.example.com","raw":"Your ChatGPT code is 123456"}]}'
+            text = '{"results":[{"id":"mail-1","address":"user@auto.example.com","raw":"Your ChatGPT code is 123456"}]}'
+
+            @staticmethod
+            def json():
+                return {
+                    "results": [
+                        {
+                            "id": "mail-1",
+                            "address": "user@auto.example.com",
+                            "raw": "Your ChatGPT code is 123456",
+                        }
+                    ]
+                }
+
+        with mock.patch("ncs_register_legacy.curl_requests.get", return_value=FakeResponse(), create=True) as get_mock:
+            messages = register._fetch_emails_cfmail("jwt-token")
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["id"], "mail-1")
+        self.assertIsNone(get_mock.call_args.kwargs["proxies"])
+
     def test_normalize_to_domain_pool_keeps_worker_active_domain(self):
         config_path = Path("/tmp/test_cfmail_accounts.json")
         config_path.write_text(

@@ -306,6 +306,12 @@ class CfmailAccount:
     admin_password: str
 
 
+DEFAULT_CFMAIL_REQUEST_ATTEMPTS = 3
+DEFAULT_CFMAIL_RETRY_BASE_DELAY_SECONDS = 1.0
+DEFAULT_CFMAIL_MAIL_LIST_LIMIT = 30
+CFMAIL_RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
+
+
 def _normalize_host(value: str) -> str:
     value = str(value or "").strip()
     if value.startswith("https://"):
@@ -505,6 +511,88 @@ def _cfmail_headers(*, jwt: str = "", use_json: bool = False) -> Dict[str, str]:
     if jwt:
         headers["Authorization"] = f"Bearer {jwt}"
     return headers
+
+
+def _is_transient_cfmail_exception(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    markers = (
+        "connection timed out",
+        "connection closed abruptly",
+        "connection reset",
+        "connection refused",
+        "tls connect error",
+        "recv failure",
+        "send failure",
+        "http/2 stream",
+        "operation timed out",
+        "curl: (7)",
+        "curl: (28)",
+        "curl: (35)",
+        "curl: (52)",
+        "curl: (55)",
+        "curl: (56)",
+    )
+    return any(marker in message for marker in markers)
+
+
+def _cfmail_response_body_snippet(response: Any, limit: int = 240) -> str:
+    try:
+        if response is None:
+            return ""
+        text = str(getattr(response, "text", "") or "").strip()
+        if text:
+            return " ".join(text.split())[:limit]
+        if getattr(response, "content", None):
+            payload = response.json()
+            return " ".join(json.dumps(payload, ensure_ascii=False).split())[:limit]
+    except Exception:
+        return ""
+    return ""
+
+
+def _cfmail_mail_list_limit() -> int:
+    raw = str(os.getenv("ZHUCE6_CFMAIL_MAIL_LIST_LIMIT", str(DEFAULT_CFMAIL_MAIL_LIST_LIMIT)) or "").strip()
+    try:
+        value = int(raw)
+    except Exception:
+        value = DEFAULT_CFMAIL_MAIL_LIST_LIMIT
+    return max(10, min(value, 100))
+
+
+def _cfmail_request_with_retry(
+    *,
+    method: str,
+    url: str,
+    retry_label: str,
+    max_attempts: int = DEFAULT_CFMAIL_REQUEST_ATTEMPTS,
+    retry_delay: float = DEFAULT_CFMAIL_RETRY_BASE_DELAY_SECONDS,
+    **kwargs: Any,
+):
+    requester = getattr(curl_requests, method.lower())
+    last_exc: Optional[Exception] = None
+    last_response = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requester(url, **kwargs)
+            last_response = response
+        except Exception as exc:
+            last_exc = exc
+            if attempt < max_attempts and _is_transient_cfmail_exception(exc):
+                time.sleep(retry_delay * attempt)
+                continue
+            raise
+
+        if response.status_code in CFMAIL_RETRYABLE_STATUS_CODES and attempt < max_attempts:
+            time.sleep(retry_delay * attempt)
+            continue
+        return response
+
+    if last_exc is not None:
+        raise last_exc
+    if last_response is not None:
+        return last_response
+    raise RuntimeError(f"{retry_label} request failed without response")
 
 
 def _wildmail_headers(*, api_key: str = "") -> Dict[str, str]:
@@ -2160,18 +2248,21 @@ class ChatGPTRegister:
                 f"当前已加载配置数: {len(CFMAIL_ACCOUNTS)}"
             )
 
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
-        local = f"oc{secrets.token_hex(5)}"
+        # Reference project keeps cfmail mailbox traffic on direct egress.
+        # Reusing the register proxy here is what pushes accounts into cooldown.
+        local = f"oc{secrets.token_hex(8)}"
 
         try:
-            resp = curl_requests.post(
-                f"https://{account.worker_domain}/admin/new_address",
+            resp = _cfmail_request_with_retry(
+                method="POST",
+                url=f"https://{account.worker_domain}/admin/new_address",
+                retry_label="cfmail create mailbox",
                 headers={
                     "x-admin-auth": account.admin_password,
                     **_cfmail_headers(use_json=True),
                 },
                 json={"enablePrefix": True, "name": local, "domain": account.email_domain},
-                proxies=proxies,
+                proxies=None,
                 impersonate=self.impersonate,
                 timeout=15,
             )
@@ -2180,10 +2271,16 @@ class ChatGPTRegister:
             raise Exception(f"cfmail 请求异常: {e}")
 
         if resp.status_code != 200:
+            detail = _cfmail_response_body_snippet(resp)
             _record_cfmail_failure(account.name, f"new_address status={resp.status_code}")
-            raise Exception(f"cfmail 创建失败: {resp.status_code} - {resp.text[:200]}")
+            detail_suffix = f" | body={detail}" if detail else ""
+            raise Exception(f"cfmail 创建失败: HTTP {resp.status_code}{detail_suffix}")
 
-        data = resp.json()
+        try:
+            data = resp.json() if resp.content else {}
+        except Exception as e:
+            _record_cfmail_failure(account.name, f"new_address invalid json: {e}")
+            raise Exception(f"cfmail 返回非法 JSON: {e}") from e
         email = str(data.get("address") or "").strip()
         jwt = str(data.get("jwt") or "").strip()
 
@@ -2195,6 +2292,7 @@ class ChatGPTRegister:
         self._cfmail_api_base = f"https://{account.worker_domain}"
         self._cfmail_account_name = account.name
         self._cfmail_mail_token = jwt
+        _record_cfmail_success(account.name)
 
         self._print(f"[cfmail] 创建邮箱成功: {email} (配置: {account.name})")
         # cfmail 没有独立密码概念，返回空串占位
@@ -2204,13 +2302,14 @@ class ChatGPTRegister:
         """从 cfmail 拉取邮件列表"""
         if not self._cfmail_api_base:
             return []
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
         try:
-            resp = curl_requests.get(
-                f"{self._cfmail_api_base}/api/mails",
-                params={"limit": 10, "offset": 0},
+            resp = _cfmail_request_with_retry(
+                method="GET",
+                url=f"{self._cfmail_api_base}/api/mails",
+                retry_label="cfmail list mails",
+                params={"limit": _cfmail_mail_list_limit(), "offset": 0},
                 headers=_cfmail_headers(jwt=mail_token, use_json=True),
-                proxies=proxies,
+                proxies=None,
                 impersonate=self.impersonate,
                 timeout=15,
             )
