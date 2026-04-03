@@ -96,10 +96,12 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
             _has_auto = any(d.startswith("auto") for d in _active_domains)
 
             if not _has_auto:
-                # 轮换：将当前静态域名替换为新的随机子域名（跳过烟雾测试，避免CF传播延迟）
+                # 轮换：将当前静态域名替换为新的随机子域名（跳过烟雾测试）
                 _rot = _provisioner.rotate_active_domain(skip_smoke=True)
                 if _rot.success:
                     print(f"[cfmail] 随机子域名已创建: {_rot.new_domain}")
+                    print("[cfmail] 等待 60 秒让 CF Workers 绑定生效...")
+                    time.sleep(60)
                 else:
                     print(f"[cfmail] 随机子域名创建失败: {_rot.error}，将继续使用现有域名")
             else:
@@ -108,7 +110,7 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
             # 强制重新加载账号，让注册流程使用新域名
             legacy._reload_cfmail_accounts_if_needed(force=True)
 
-            # 只保留 auto 随机子域名账号，排除静态 env 账号
+            # 优先使用 auto 随机子域名账号
             _auto_accounts = [a for a in legacy.CFMAIL_ACCOUNTS if a.email_domain.startswith("auto")]
             if _auto_accounts:
                 legacy.CFMAIL_ACCOUNTS = _auto_accounts
@@ -135,11 +137,13 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
             print(f"\n[cfmail] 连续失败 {_MAX_CONSECUTIVE_FAILURES} 次，触发域名轮换...")
             result = _provisioner.rotate_active_domain(skip_smoke=True)
             if result.success:
+                print(f"[cfmail] 域名轮换成功: {result.old_domain} -> {result.new_domain}")
+                print("[cfmail] 等待 60 秒让 CF Workers 绑定生效...")
+                time.sleep(60)
                 legacy._reload_cfmail_accounts_if_needed(force=True)
                 _auto_accounts = [a for a in legacy.CFMAIL_ACCOUNTS if a.email_domain.startswith("auto")]
                 if _auto_accounts:
                     legacy.CFMAIL_ACCOUNTS = _auto_accounts
-                print(f"[cfmail] 域名轮换成功: {result.old_domain} -> {result.new_domain}")
             else:
                 print(f"[cfmail] 域名轮换失败: {result.error}")
         except Exception as _rot_err:
