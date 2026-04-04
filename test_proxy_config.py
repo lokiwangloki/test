@@ -343,7 +343,7 @@ class ProxyNormalizationTests(unittest.TestCase):
             "preflight": "n",
             "output_file": "registered_accounts.txt",
             "total_accounts": 500,
-            "max_workers": 3,
+            "max_workers": 5,
             "cpa_cleanup": "n",
             "cpa_upload_every_n": 3,
         }
@@ -356,15 +356,15 @@ class ProxyNormalizationTests(unittest.TestCase):
             stdin_input = auto_scheduler.build_register_input(params, cfg)
         self.assertEqual(
             stdin_input,
-            "\nn\nregistered_accounts.txt\n500\n3\nn\n3\n",
+            "\nn\nregistered_accounts.txt\n500\n5\nn\n3\n",
         )
 
     def test_auto_scheduler_defaults_target_1000_accounts(self):
         self.assertEqual(auto_scheduler.ACCOUNT_THRESHOLD, 1000)
         self.assertEqual(auto_scheduler.AUTO_PARAMS["total_accounts"], 1000)
 
-    def test_auto_scheduler_defaults_register_workers_to_3(self):
-        self.assertEqual(auto_scheduler.AUTO_PARAMS["max_workers"], 3)
+    def test_auto_scheduler_defaults_register_workers_to_5(self):
+        self.assertEqual(auto_scheduler.AUTO_PARAMS["max_workers"], 5)
 
     def test_auto_scheduler_uploads_each_success_immediately_by_default(self):
         self.assertEqual(auto_scheduler.AUTO_PARAMS["cpa_upload_every_n"], 1)
