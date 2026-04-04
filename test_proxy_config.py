@@ -346,8 +346,8 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(auto_scheduler.ACCOUNT_THRESHOLD, 1000)
         self.assertEqual(auto_scheduler.AUTO_PARAMS["total_accounts"], 1000)
 
-    def test_auto_scheduler_defaults_register_workers_to_1(self):
-        self.assertEqual(auto_scheduler.AUTO_PARAMS["max_workers"], 1)
+    def test_auto_scheduler_defaults_register_workers_to_3(self):
+        self.assertEqual(auto_scheduler.AUTO_PARAMS["max_workers"], 3)
 
     def test_auto_scheduler_uploads_each_success_immediately_by_default(self):
         self.assertEqual(auto_scheduler.AUTO_PARAMS["cpa_upload_every_n"], 1)
