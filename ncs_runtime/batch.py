@@ -275,8 +275,11 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                 idx = active_futures.pop(future)
                 try:
                     ok, email, error_code, err = future.result()
+                    account_label = str(email or idx)
                     if ok:
                         success_count += 1
+                        with legacy._print_lock:
+                            print(f"[{account_label}] [结果] ✅成功")
                         since_last_upload += 1
                         with _consec_fail_lock:
                             _consec_fail_count[0] = 0
@@ -285,6 +288,9 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                             since_last_upload = 0
                     else:
                         fail_count += 1
+                        with legacy._print_lock:
+                            detail = f": {err}" if err else ""
+                            print(f"[{account_label}] [结果] ❌失败{detail}")
                         if _is_duck_pool_exhausted(err):
                             pending_indexes.clear()
                             for pending_future in list(active_futures.keys()):
@@ -296,7 +302,7 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                 except Exception as error:
                     fail_count += 1
                     with legacy._print_lock:
-                        print(f"[{idx}] [仅注册] ❌注册失败: 线程异常: {error}")
+                        print(f"[{idx}] [结果] ❌失败: 线程异常: {error}")
                     _record_failure_and_maybe_rotate()
                 finally:
                     completed_count += 1

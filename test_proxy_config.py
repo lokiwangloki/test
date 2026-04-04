@@ -346,8 +346,8 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(auto_scheduler.ACCOUNT_THRESHOLD, 1000)
         self.assertEqual(auto_scheduler.AUTO_PARAMS["total_accounts"], 1000)
 
-    def test_auto_scheduler_defaults_register_workers_to_3(self):
-        self.assertEqual(auto_scheduler.AUTO_PARAMS["max_workers"], 3)
+    def test_auto_scheduler_defaults_register_workers_to_5(self):
+        self.assertEqual(auto_scheduler.AUTO_PARAMS["max_workers"], 5)
 
     def test_auto_scheduler_uploads_each_success_immediately_by_default(self):
         self.assertEqual(auto_scheduler.AUTO_PARAMS["cpa_upload_every_n"], 1)
@@ -1281,7 +1281,54 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         self.assertEqual(rotate_kwargs, [])
 
-    def test_run_batch_rotates_cfmail_domains_after_30_consecutive_failures(self):
+    def test_run_batch_prints_result_line_for_each_account(self):
+        output = io.StringIO()
+
+        class FakeFuture:
+            def __init__(self, result):
+                self._result = result
+
+            def result(self):
+                return self._result
+
+        class FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                del args, kwargs
+                self._results = [
+                    FakeFuture((True, "ok@example.com", "", None)),
+                    FakeFuture((False, "bad@example.com", "", "OAuth Token 获取失败")),
+                ]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                del fn, args, kwargs
+                return self._results.pop(0)
+
+        fake_account = ncs_register_legacy.CfmailAccount(
+            name="default",
+            worker_domain="worker.example.com",
+            email_domain="base.example.com",
+            admin_password="secret",
+        )
+
+        with mock.patch.object(ncs_register_legacy, "MAIL_PROVIDER", "cfmail"):
+            with mock.patch.object(ncs_register_legacy, "CFMAIL_ACCOUNTS", [fake_account]):
+                with mock.patch.object(ncs_register_legacy, "CFMAIL_PROVISIONING_ENABLED", False):
+                    with mock.patch.object(ncs_register_legacy, "UPLOAD_API_URL", ""):
+                        with mock.patch.object(runtime_batch, "ThreadPoolExecutor", FakeExecutor):
+                            with mock.patch.object(runtime_batch, "wait", side_effect=lambda futures, return_when=None: (set(futures), set())):
+                                with mock.patch("sys.stdout", new=output):
+                                    runtime_batch.run_batch(total_accounts=2, max_workers=2)
+
+        rendered = output.getvalue()
+        self.assertIn("[ok@example.com] [结果] ✅成功", rendered)
+        self.assertIn("[bad@example.com] [结果] ❌失败: OAuth Token 获取失败", rendered)
+
         rotate_kwargs = []
 
         class FakeProvisioner:
