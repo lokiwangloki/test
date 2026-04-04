@@ -10,10 +10,10 @@ sys.modules.setdefault("curl_cffi", fake_curl_cffi)
 
 
 class V2FlowTests(unittest.TestCase):
-    def test_default_config_prefers_cfmail_with_cfmail_secret_mappings(self):
+    def test_default_config_prefers_duckmail_with_mail_secret_mappings(self):
         config = Path("config.json").read_text(encoding="utf-8")
 
-        self.assertIn('"mail_provider": "cfmail"', config)
+        self.assertIn('"mail_provider": "duckmail"', config)
         self.assertIn('"cfmail_config_path": "zhuce5_cfmail_accounts.json"', config)
         self.assertIn('"lamail_api_key_env": "LAMAIL_API_KEY"', config)
         self.assertIn('"lamail_domain_env": "LAMAIL_DOMAIN"', config)

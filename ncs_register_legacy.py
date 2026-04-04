@@ -54,7 +54,7 @@ def _normalize_proxy_value(value: Any) -> str:
 def _load_config():
     config = {
         "total_accounts": 3,
-        "mail_provider": "cfmail",
+        "mail_provider": "duckmail",
         "cfmail_config_path": "zhuce5_cfmail_accounts.json",
         "cfmail_profile": "auto",
         "cfmail_worker_domain": "",
@@ -198,7 +198,7 @@ UPLOAD_API_TOKEN = _CONFIG["upload_api_token"]
 UPLOAD_API_PROXY = str(_CONFIG.get("upload_api_proxy", "") or "").strip()
 CPA_CLEANUP_ENABLED = _as_bool(_CONFIG.get("cpa_cleanup_enabled", True))
 CPA_UPLOAD_EVERY_N = max(1, int(_CONFIG.get("cpa_upload_every_n", 1) or 1))
-MAIL_PROVIDER = str(_CONFIG.get("mail_provider", "cfmail")).strip().lower()
+MAIL_PROVIDER = str(_CONFIG.get("mail_provider", "duckmail")).strip().lower()
 CF_AUTH_EMAIL = str(_CONFIG.get("cf_auth_email", "") or "").strip()
 CF_AUTH_KEY = str(_CONFIG.get("cf_auth_key", "") or "").strip()
 CF_ACCOUNT_ID = str(_CONFIG.get("cf_account_id", "") or "").strip()
@@ -216,7 +216,7 @@ TASK_LAUNCH_INTERVAL_MAX_SECONDS = max(
     int(_CONFIG.get("task_launch_interval_max_seconds", 3) or TASK_LAUNCH_INTERVAL_MIN_SECONDS),
 )
 
-SUPPORTED_MAIL_PROVIDERS = {"cfmail", "tempmail_lol", "lamail", "wildmail"}
+SUPPORTED_MAIL_PROVIDERS = {"duckmail", "cfmail", "tempmail_lol", "lamail", "wildmail"}
 
 # 全局线程锁
 _print_lock = threading.RLock()
@@ -1831,8 +1831,24 @@ class WildmailMailboxService(BaseMailboxService):
         return self._session
 
 
+class DuckMailMailboxService(BaseMailboxService):
+    provider = "duckmail"
+
+    def create_mailbox(self) -> MailboxSession:
+        email, password, token = self.register_client.create_duckmail_email()
+        self._session = MailboxSession(
+            email=email,
+            password=password,
+            token=token,
+            provider=self.provider,
+        )
+        return self._session
+
+
 def _build_mailbox_service(register_client: "ChatGPTRegister", provider: str) -> BaseMailboxService:
     normalized = str(provider or "").strip().lower()
+    if normalized == "duckmail":
+        return DuckMailMailboxService(register_client)
     if normalized == "cfmail":
         return CfmailMailboxService(register_client)
     if normalized == "tempmail_lol":
@@ -1841,7 +1857,7 @@ def _build_mailbox_service(register_client: "ChatGPTRegister", provider: str) ->
         return LaMailMailboxService(register_client)
     if normalized == "wildmail":
         return WildmailMailboxService(register_client)
-    raise ValueError(f"不支持的 mail_provider={provider}，当前仅支持 cfmail / tempmail_lol / lamail / wildmail")
+    raise ValueError(f"不支持的 mail_provider={provider}，当前仅支持 duckmail / cfmail / tempmail_lol / lamail / wildmail")
 
 
 class RegistrationTaskRunner:
@@ -2035,6 +2051,25 @@ class ChatGPTRegister:
             raise Exception(f"获取邮件 Token 失败: {token_res.status_code}")
         except Exception as e:
             raise Exception(f"DuckMail 创建邮箱失败: {e}")
+
+    def create_duckmail_email(self):
+        try:
+            import get_duck
+        except Exception as e:
+            raise Exception(f"加载 get_duck.py 失败: {e}") from e
+
+        try:
+            email = get_duck.take_duck_address()
+        except Exception as first_error:
+            bearer = str(os.environ.get("DUCK_EMAIL_BEARER", "")).strip()
+            if not bearer:
+                raise Exception(f"duck 邮箱地址池不可用: {first_error}") from first_error
+            self._print("[duckmail] 地址池为空，尝试补充 duck 邮箱...")
+            get_duck.fetch_duck_addresses()
+            email = get_duck.take_duck_address()
+
+        self._print(f"[duckmail] 创建邮箱成功: {email}")
+        return email, "", email
 
     def _fetch_emails_duckmail(self, mail_token: str):
         try:
@@ -2529,6 +2564,15 @@ class ChatGPTRegister:
                 )
                 if new_messages:
                     code = self._extract_lamail_code(new_messages, mail_token)
+            elif effective_provider == "duckmail":
+                try:
+                    import qq_mail_reader
+                    code = qq_mail_reader.fetch_verification_code_for_recipient(
+                        email,
+                        poll_timeout_seconds=timeout,
+                    )
+                except Exception as e:
+                    self._print(f"[OTP] duckmail 拉取失败: {e}")
             else:
                 # DuckMail
                 messages = self._fetch_emails_duckmail(mail_token)
@@ -3615,7 +3659,7 @@ def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
         return
     if provider not in SUPPORTED_MAIL_PROVIDERS:
         print(f"❌ 错误: 不支持的 mail_provider={provider}")
-        print("   可选值: cfmail / lamail / tempmail_lol / wildmail")
+        print("   可选值: duckmail / cfmail / lamail / tempmail_lol / wildmail")
         return
 
     actual_workers = min(max_workers, total_accounts)
@@ -3624,7 +3668,15 @@ def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
     print(f"  注册数量: {total_accounts} | 并发数: {actual_workers}")
     print(f"  批量模式: {BATCH_MODE}")
     print(f"  邮箱服务: {provider}")
-    if provider == "cfmail":
+    if provider == "duckmail":
+        try:
+            import get_duck
+            duck_pool = get_duck.resolve_output_file()
+            duck_count = len(get_duck.load_duck_addresses(str(duck_pool)))
+            print(f"  Duck 邮箱池: {duck_pool} ({duck_count} 个)")
+        except Exception as e:
+            print(f"  Duck 邮箱池: 读取失败 ({e})")
+    elif provider == "cfmail":
         cfmail_names = ", ".join(account.name for account in CFMAIL_ACCOUNTS)
         print(f"  cfmail 配置: {cfmail_names}")
         print(f"  cfmail 模式: {CFMAIL_PROFILE_MODE}")
@@ -3723,7 +3775,16 @@ def main():
     provider = MAIL_PROVIDER
 
     # 检查配置
-    if provider == "cfmail":
+    if provider == "duckmail":
+        try:
+            import get_duck
+            duck_pool = get_duck.resolve_output_file()
+            duck_count = len(get_duck.load_duck_addresses(str(duck_pool)))
+            print(f"\n[Info] Duck 邮箱池: {duck_pool}")
+            print(f"[Info] Duck 邮箱数量: {duck_count}")
+        except Exception as e:
+            print(f"\n[Warn] Duck 邮箱池读取失败: {e}")
+    elif provider == "cfmail":
         if CFMAIL_ACCOUNTS:
             cfmail_names = ", ".join(account.name for account in CFMAIL_ACCOUNTS)
             print(f"\n[Info] cfmail 配置已加载: {cfmail_names}")
@@ -3749,7 +3810,7 @@ def main():
             print("[Info] Wildmail API Key: 未配置")
     else:
         print(f"\n❌ 错误: 不支持的 mail_provider={provider}")
-        print("   可选值: cfmail / lamail / tempmail_lol / wildmail")
+        print("   可选值: duckmail / cfmail / lamail / tempmail_lol / wildmail")
         return
 
     # 代理配置

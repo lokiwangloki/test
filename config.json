@@ -1,7 +1,7 @@
 {
   "_comment": "ChatGPT 批量自动注册工具配置文件（发行版示例，敏感字段请自行填写）",
   "total_accounts": 1000,
-  "mail_provider": "cfmail",
+  "mail_provider": "duckmail",
   "cfmail_config_path": "zhuce5_cfmail_accounts.json",
   "cfmail_profile": "auto",
   "cfmail_worker_domain": "",

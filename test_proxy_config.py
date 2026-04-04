@@ -13,9 +13,11 @@ fake_curl_cffi = types.ModuleType("curl_cffi")
 fake_curl_cffi.requests = types.SimpleNamespace()
 sys.modules.setdefault("curl_cffi", fake_curl_cffi)
 
+import get_duck
 import ncs_register
 import ncs_register_legacy
 import protocol_keygen
+import qq_mail_reader
 import sentinel_browser
 from ncs_runtime import batch as runtime_batch, email_services, engine as runtime_engine
 
@@ -497,8 +499,10 @@ class ProxyNormalizationTests(unittest.TestCase):
             ncs_register._build_mailbox_service(fake_register, "wildmail"),
             email_services.WildmailMailboxService,
         )
-        with self.assertRaises(ValueError):
-            ncs_register._build_mailbox_service(fake_register, "duckmail")
+        self.assertIsInstance(
+            ncs_register._build_mailbox_service(fake_register, "duckmail"),
+            email_services.DuckMailMailboxService,
+        )
 
     def test_legacy_mailbox_service_factory_supports_cfmail_and_wildmail(self):
         register_client = mock.Mock()
@@ -510,6 +514,65 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIsInstance(
             ncs_register_legacy._build_mailbox_service(register_client, "wildmail"),
             ncs_register_legacy.WildmailMailboxService,
+        )
+        self.assertIsInstance(
+            ncs_register_legacy._build_mailbox_service(register_client, "duckmail"),
+            ncs_register_legacy.DuckMailMailboxService,
+        )
+
+    def test_duckmail_service_creates_mailbox_from_duck_address_file(self):
+        register_client = mock.Mock()
+        register_client.create_duckmail_email.return_value = ("poem-jarring-curve@duck.com", "", "poem-jarring-curve@duck.com")
+
+        service = email_services.DuckMailMailboxService(register_client)
+        mailbox = service.create_mailbox()
+
+        self.assertEqual(mailbox.email, "poem-jarring-curve@duck.com")
+        self.assertEqual(mailbox.token, "poem-jarring-curve@duck.com")
+        self.assertEqual(mailbox.provider, "duckmail")
+        register_client.create_duckmail_email.assert_called_once()
+
+    def test_take_duck_address_consumes_first_address_from_pool_file(self):
+        pool_file = Path("/tmp/test_duckaddress_pool.txt")
+        pool_file.write_text(
+            "afar-enrage-curvy@duck.com\npoem-jarring-curve@duck.com\n",
+            encoding="utf-8",
+        )
+
+        try:
+            chosen = get_duck.take_duck_address(address_file=str(pool_file))
+        finally:
+            remaining = pool_file.read_text(encoding="utf-8")
+            pool_file.unlink(missing_ok=True)
+
+        self.assertEqual(chosen, "afar-enrage-curvy@duck.com")
+        self.assertEqual(remaining, "poem-jarring-curve@duck.com\n")
+
+    def test_qq_mail_reader_extracts_verification_code_directly(self):
+        body = "Your ChatGPT verification code is 834271. It expires in 10 minutes."
+
+        self.assertEqual(qq_mail_reader.extract_verification_code(body), "834271")
+
+    def test_wait_for_verification_email_uses_qq_mail_reader_for_duckmail(self):
+        register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)
+        register._print = mock.Mock()
+
+        fake_module = types.ModuleType("qq_mail_reader")
+        fake_module.fetch_verification_code_for_recipient = mock.Mock(return_value="512844")
+
+        with mock.patch.dict(sys.modules, {"qq_mail_reader": fake_module}):
+            code = ncs_register_legacy.ChatGPTRegister.wait_for_verification_email(
+                register,
+                "poem-jarring-curve@duck.com",
+                timeout=77,
+                email="poem-jarring-curve@duck.com",
+                provider="duckmail",
+            )
+
+        self.assertEqual(code, "512844")
+        fake_module.fetch_verification_code_for_recipient.assert_called_once_with(
+            "poem-jarring-curve@duck.com",
+            poll_timeout_seconds=77,
         )
 
     def test_legacy_main_accepts_cfmail_provider(self):

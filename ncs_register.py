@@ -8,6 +8,7 @@ from ncs_runtime.batch import run_batch
 from ncs_runtime.email_services import (
     BaseMailboxService,
     CfmailMailboxService,
+    DuckMailMailboxService,
     LaMailMailboxService,
     MailboxSession,
     TempmailLolMailboxService,
@@ -49,7 +50,16 @@ def main():
     print("=" * 60)
 
     provider = MAIL_PROVIDER
-    if provider == "cfmail":
+    if provider == "duckmail":
+        try:
+            import get_duck
+            duck_pool = get_duck.resolve_output_file()
+            duck_count = len(get_duck.load_duck_addresses(str(duck_pool)))
+            print(f"\n[Info] Duck 邮箱池: {duck_pool}")
+            print(f"[Info] Duck 邮箱数量: {duck_count}")
+        except Exception as e:
+            print(f"\n[Warn] Duck 邮箱池读取失败: {e}")
+    elif provider == "cfmail":
         if legacy.CFMAIL_ACCOUNTS:
             cfmail_names = ", ".join(account.name for account in legacy.CFMAIL_ACCOUNTS)
             print(f"\n[Info] cfmail 配置已加载: {cfmail_names}")
@@ -67,7 +77,7 @@ def main():
         print(f"\n[Info] Wildmail 已启用: {legacy.WILDMAIL_API_BASE}")
     else:
         print(f"\n❌ 错误: 不支持的 mail_provider={provider}")
-        print("   可选值: cfmail / lamail / tempmail_lol / wildmail")
+        print("   可选值: duckmail / cfmail / lamail / tempmail_lol / wildmail")
         return
 
     proxy = DEFAULT_PROXY

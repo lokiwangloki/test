@@ -74,6 +74,15 @@ class WildmailMailboxService(BaseMailboxService):
         return self._session
 
 
+class DuckMailMailboxService(BaseMailboxService):
+    provider = "duckmail"
+
+    def create_mailbox(self) -> MailboxSession:
+        email, password, token = self.register_client.create_duckmail_email()
+        self._session = MailboxSession(email=email, password=password, token=token, provider=self.provider)
+        return self._session
+
+
 def should_fallback_to_lamail(error: Exception) -> bool:
     text = str(error or "").lower()
     if "tempmail" not in text:
@@ -93,6 +102,12 @@ def _split_provider_chain(raw: str) -> list[str]:
 
 def _provider_is_configured(provider: str) -> bool:
     normalized = str(provider or "").strip().lower()
+    if normalized == "duckmail":
+        try:
+            import get_duck
+            return bool(get_duck.load_duck_addresses())
+        except Exception:
+            return False
     if normalized == "cfmail":
         if bool(getattr(legacy, "CFMAIL_ACCOUNTS", [])):
             return True
@@ -114,6 +129,8 @@ def get_provider_candidates(provider: str) -> list[str]:
     configured_chain = _split_provider_chain(getattr(legacy, "MAIL_PROVIDER_CHAIN", ""))
     if configured_chain:
         raw_candidates = configured_chain
+    elif normalized == "duckmail":
+        raw_candidates = ["duckmail"]
     elif normalized == "cfmail":
         raw_candidates = ["cfmail"]
     elif normalized == "wildmail":
@@ -127,7 +144,7 @@ def get_provider_candidates(provider: str) -> list[str]:
 
     candidates: list[str] = []
     for item in raw_candidates:
-        if item in {"cfmail", "tempmail_lol", "lamail", "wildmail"} and item not in candidates and _provider_is_configured(item):
+        if item in {"duckmail", "cfmail", "tempmail_lol", "lamail", "wildmail"} and item not in candidates and _provider_is_configured(item):
             candidates.append(item)
 
     if not candidates:
@@ -137,6 +154,8 @@ def get_provider_candidates(provider: str) -> list[str]:
 
 def build_mailbox_service(register_client: "legacy.ChatGPTRegister", provider: str) -> BaseMailboxService:
     normalized = str(provider or "").strip().lower()
+    if normalized == "duckmail":
+        return DuckMailMailboxService(register_client)
     if normalized == "cfmail":
         return CfmailMailboxService(register_client)
     if normalized == "tempmail_lol":
@@ -145,4 +164,4 @@ def build_mailbox_service(register_client: "legacy.ChatGPTRegister", provider: s
         return LaMailMailboxService(register_client)
     if normalized == "wildmail":
         return WildmailMailboxService(register_client)
-    raise ValueError(f"不支持的 mail_provider={provider}，当前仅支持 cfmail / tempmail_lol / lamail / wildmail")
+    raise ValueError(f"不支持的 mail_provider={provider}，当前仅支持 duckmail / cfmail / tempmail_lol / lamail / wildmail")
