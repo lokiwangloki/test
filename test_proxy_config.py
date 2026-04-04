@@ -484,10 +484,12 @@ class ProxyNormalizationTests(unittest.TestCase):
     def test_scheduler_workflow_restores_and_saves_duck_pool_cache(self):
         workflow = Path(".github/workflows/scheduler.yml").read_text(encoding="utf-8")
         self.assertIn("Restore duck pool cache", workflow)
-        self.assertIn("path: duckaddress.txt", workflow)
-        self.assertIn("duck-pool-v1-", workflow)
+        self.assertIn("duckaddress.txt", workflow)
+        self.assertIn("duck_last_seen.txt", workflow)
+        self.assertIn("duck-pool-v2-", workflow)
         self.assertIn("Save duck pool cache", workflow)
         self.assertIn("Commit duck pool updates", workflow)
+        self.assertIn("git add duckaddress.txt duck_last_seen.txt", workflow)
         self.assertIn("git push origin HEAD:${GITHUB_REF_NAME}", workflow)
 
     def test_mailbox_service_factory_supports_cfmail_lamail_tempmail_and_wildmail(self):
@@ -557,6 +559,19 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(chosen, "afar-enrage-curvy@duck.com")
         self.assertEqual(remaining, "poem-jarring-curve@duck.com\n")
 
+    def test_load_duck_last_seen_round_trips(self):
+        pool_file = Path("/tmp/test_duck_last_seen_pool.txt")
+        pool_file.write_text("alpha@duck.com\n", encoding="utf-8")
+
+        try:
+            get_duck.save_duck_last_seen("beta@duck.com", address_file=str(pool_file))
+            value = get_duck.load_duck_last_seen(address_file=str(pool_file))
+        finally:
+            pool_file.unlink(missing_ok=True)
+            pool_file.with_name("duck_last_seen.txt").unlink(missing_ok=True)
+
+        self.assertEqual(value, "beta@duck.com")
+
     def test_remove_duck_addresses_deletes_uploaded_addresses_from_pool(self):
         pool_file = Path("/tmp/test_duckaddress_remove_pool.txt")
         pool_file.write_text(
@@ -611,8 +626,50 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         self.assertEqual(bearers, ["token-1", "token-2"])
 
+    def test_fetch_duck_addresses_skips_last_seen_duplicate(self):
+        pool_file = Path("/tmp/test_duck_last_seen_skip_pool.txt")
+        pool_file.write_text("", encoding="utf-8")
+        last_seen_file = pool_file.with_name("duck_last_seen.txt")
+        last_seen_file.write_text("rack-factor-impure@duck.com\n", encoding="utf-8")
+
+        class FakeResponse:
+            def __init__(self, address):
+                self._address = address
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"address": self._address}
+
+        responses = [
+            FakeResponse("rack-factor-impure"),
+            FakeResponse("wham-justness-cape"),
+            FakeResponse("wham-justness-cape"),
+        ]
+
+        def fake_post(url, headers=None, timeout=None, impersonate=None):
+            del url, headers, timeout, impersonate
+            return responses.pop(0)
+
+        fake_requests = types.SimpleNamespace(post=fake_post)
+        fake_curl_module = types.ModuleType("curl_cffi")
+        fake_curl_module.requests = fake_requests
+
+        try:
+            with mock.patch.dict(sys.modules, {"curl_cffi": fake_curl_module}):
+                with mock.patch.dict("os.environ", {"DUCK_EMAIL_BEARERS": '["good-token"]', "DUCK_EMAIL_BEARER": ""}, clear=False):
+                    with mock.patch("time.sleep", return_value=None):
+                        added = get_duck.fetch_duck_addresses(output_file=str(pool_file), stop_count=2, delay_seconds=0)
+            saved = pool_file.read_text(encoding="utf-8")
+        finally:
+            pool_file.unlink(missing_ok=True)
+            last_seen_file.unlink(missing_ok=True)
+
+        self.assertEqual(added, ["wham-justness-cape@duck.com"])
+        self.assertEqual(saved, "wham-justness-cape@duck.com\n")
+
     def test_fetch_duck_addresses_falls_back_to_next_bearer(self):
-        pool_file = Path("/tmp/test_duckaddress_fetch_pool.txt")
         pool_file.unlink(missing_ok=True)
 
         class FakeResponse:
@@ -1900,6 +1957,65 @@ class ProxyNormalizationTests(unittest.TestCase):
             otp_call[2]["headers"]["openai-sentinel-token"],
             '{"flow":"email_otp_validate","c":"http-otp"}',
         )
+
+    def test_protocol_registrar_step0_retries_oauth2_auth_before_browser_bootstrap(self):
+        class FakeCookies(dict):
+            def __init__(self):
+                super().__init__()
+                self.jar = []
+
+            def set(self, name, value, domain=""):
+                del domain
+                self[name] = value
+
+        class FakeResponse:
+            def __init__(self, status_code, *, url="", text="", json_data=None):
+                self.status_code = status_code
+                self.url = url
+                self.text = text
+                self._json_data = json_data
+                self.headers = {}
+
+            def json(self):
+                if self._json_data is None:
+                    raise ValueError("no json")
+                return self._json_data
+
+        class FakeSession:
+            def __init__(self):
+                self.cookies = FakeCookies()
+                self.get_calls = []
+                self.post_calls = []
+
+            def get(self, url, **kwargs):
+                self.get_calls.append((url, kwargs))
+                if url.startswith("https://auth.openai.com/oauth/authorize"):
+                    return FakeResponse(
+                        403,
+                        url="https://auth.openai.com/api/oauth/oauth2/auth",
+                        text="<!DOCTYPE html><title>Just a moment...</title>",
+                    )
+                if url == "https://auth.openai.com/api/oauth/oauth2/auth":
+                    self.cookies["login_session"] = "oauth2-cookie"
+                    return FakeResponse(200, url="https://auth.openai.com/log-in", text="<html></html>")
+                raise AssertionError(f"unexpected GET: {url}")
+
+            def post(self, url, **kwargs):
+                self.post_calls.append((url, kwargs))
+                return FakeResponse(200, url=url, json_data={"page": {"type": "password"}})
+
+        fake_session = FakeSession()
+        with mock.patch("protocol_keygen.create_session", return_value=fake_session):
+            registrar = protocol_keygen.ProtocolRegistrar(browser_tokens={"authorize_continue": '{"token":"ok"}'})
+
+        with mock.patch("protocol_keygen.generate_pkce", return_value=("verifier-123", "challenge-123")):
+            with mock.patch("protocol_keygen.secrets.token_urlsafe", return_value="state-123"):
+                with mock.patch("protocol_keygen._bootstrap_login_session_via_browser", side_effect=AssertionError("browser bootstrap should not run")):
+                    ok = registrar.step0_init_oauth_session("user@example.com")
+
+        self.assertTrue(ok)
+        self.assertEqual(fake_session.get_calls[1][0], "https://auth.openai.com/api/oauth/oauth2/auth")
+        self.assertEqual(len(fake_session.post_calls), 1)
 
     def test_protocol_registrar_step0_falls_back_to_browser_bootstrap_when_authorize_blocked(self):
         class FakeCookies(dict):

@@ -1336,6 +1336,7 @@ class ProtocolRegistrar:
 
         # ===== 步骤0a: GET /oauth/authorize → 获取 login_session cookie =====
         print("\n  --- [步骤0a] GET /oauth/authorize ---")
+        resp = None
         try:
             resp = self.session.get(
                 authorize_url,
@@ -1353,11 +1354,33 @@ class ProtocolRegistrar:
         has_login_session = "login_session" in self.session.cookies
         print(f"  login_session: {'✅ 已获取' if has_login_session else '❌ 未获取'}")
         if not has_login_session:
-            print("  ⚠️ 未获得 login_session cookie，尝试浏览器兜底...")
-            if resp.status_code >= 400:
+            oauth2_url = f"{OPENAI_AUTH_BASE}/api/oauth/oauth2/auth"
+            print("  ⚠️ 未获得 login_session cookie，尝试 /api/oauth/oauth2/auth ...")
+            try:
+                resp_oauth2 = self.session.get(
+                    oauth2_url,
+                    headers={
+                        **NAVIGATE_HEADERS,
+                        "referer": authorize_url,
+                    },
+                    params=authorize_params,
+                    allow_redirects=True,
+                    verify=False,
+                    timeout=30,
+                )
+                print(f"  oauth2/auth: {resp_oauth2.status_code}")
+                has_login_session = "login_session" in self.session.cookies
+                print(f"  oauth2/auth 后 login_session: {'✅ 已获取' if has_login_session else '❌ 未获取'}")
+                if not has_login_session and resp_oauth2.status_code >= 400:
+                    print(f"  oauth2/auth 响应预览: {resp_oauth2.text[:300]}")
+            except Exception as e:
+                print(f"  ⚠️ oauth2/auth 请求失败: {e}")
+
+        if not has_login_session:
+            print("  ⚠️ HTTP 路径仍未获得 login_session，尝试浏览器兜底...")
+            if resp is not None and resp.status_code >= 400:
                 print(f"  OAuth 授权响应: HTTP {resp.status_code}")
-            # 打印响应内容片段用于诊断
-            print(f"  响应预览: {resp.text[:300]}")
+                print(f"  响应预览: {resp.text[:300]}")
             browser_bootstrap = _bootstrap_login_session_via_browser(
                 self.session,
                 authorize_url,
@@ -1365,10 +1388,10 @@ class ProtocolRegistrar:
                 proxy=PROXY if PROXY else "",
                 timeout_ms=45000,
             )
+            final_url = str(browser_bootstrap.get("final_url") or "").strip()
+            cookie_count = int(browser_bootstrap.get("cookie_count") or 0)
             if browser_bootstrap.get("success"):
                 has_login_session = "login_session" in self.session.cookies
-                final_url = str(browser_bootstrap.get("final_url") or "").strip()
-                cookie_count = int(browser_bootstrap.get("cookie_count") or 0)
                 browser_tokens = browser_bootstrap.get("browser_tokens") or {}
                 if isinstance(browser_tokens, dict):
                     self._browser_tokens.update(
@@ -1384,12 +1407,15 @@ class ProtocolRegistrar:
                 )
             else:
                 detail = str(browser_bootstrap.get("error") or "未知错误").strip() or "未知错误"
-                print(f"  浏览器兜底失败: {detail}")
+                print(
+                    "  浏览器兜底失败:"
+                    f" {detail} (cookies={cookie_count}, final_url={final_url or '-'})"
+                )
                 return False
 
-
-
-        # ===== 步骤0b: POST /api/accounts/authorize/continue → 提交邮箱 =====
+        if not ("login_session" in self.session.cookies):
+            print("  ❌ login_session 仍未获取，终止后续步骤")
+            return False
         print("\n  --- [步骤0b] POST /api/accounts/authorize/continue ---")
 
         # 构造请求头（参考 perform_codex_oauth_login_http 的步骤2）

@@ -51,6 +51,26 @@ def load_duck_addresses(address_file: str | None = None) -> list[str]:
     ]
 
 
+def _last_seen_file(address_file: str | None = None) -> Path:
+    path = resolve_output_file(address_file)
+    return path.with_name("duck_last_seen.txt")
+
+
+def load_duck_last_seen(address_file: str | None = None) -> str:
+    path = _last_seen_file(address_file)
+    if not path.exists():
+        return ""
+    return str(path.read_text(encoding="utf-8").strip() or "")
+
+
+def save_duck_last_seen(address: str, address_file: str | None = None) -> None:
+    normalized = str(address or "").strip().lower()
+    if not normalized:
+        return
+    path = _last_seen_file(address_file)
+    path.write_text(normalized + "\n", encoding="utf-8")
+
+
 def _write_duck_addresses(addresses: list[str], address_file: str | None = None) -> Path:
     path = resolve_output_file(address_file)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -83,6 +103,7 @@ def ensure_duck_address_available(
         if addresses:
             chosen = addresses[0]
             _write_duck_addresses(addresses[1:], address_file)
+            save_duck_last_seen(chosen, address_file)
             return chosen
 
     last_error: Exception | None = None
@@ -103,6 +124,7 @@ def ensure_duck_address_available(
                 if addresses:
                     chosen = addresses[0]
                     _write_duck_addresses(addresses[1:], address_file)
+                    save_duck_last_seen(chosen, address_file)
                     return chosen
         if attempt < attempts:
             print(f"[duckmail] 地址池为空，第 {attempt}/{attempts} 次补充失败，重试中...")
@@ -249,6 +271,7 @@ def fetch_duck_addresses(
 
     url = str(api_url or os.environ.get("DUCK_EMAIL_API_URL", DEFAULT_API_URL)).strip() or DEFAULT_API_URL
     existing_addresses = set(load_duck_addresses(output_file))
+    last_seen = load_duck_last_seen(output_file)
     all_addresses: list[str] = []
     last_error: Exception | None = None
 
@@ -272,6 +295,10 @@ def fetch_duck_addresses(
     seen = set(existing_addresses)
     to_add: list[str] = []
     for item in all_addresses:
+        normalized = item.strip().lower()
+        if last_seen and normalized == last_seen:
+            print(f"[duckmail] 跳过与 last_seen 重复的地址: {item}")
+            continue
         if item not in seen:
             to_add.append(item)
             seen.add(item)
