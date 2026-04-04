@@ -27,7 +27,7 @@ class BaseMailboxService:
     def create_mailbox(self) -> MailboxSession:
         raise NotImplementedError
 
-    def wait_for_verification_code(self, timeout: int) -> Optional[str]:
+    def wait_for_verification_code(self, timeout: int, stage: str = "otp") -> Optional[str]:
         if not self._session:
             return None
         return self.register_client.wait_for_verification_email(
@@ -35,6 +35,7 @@ class BaseMailboxService:
             timeout=timeout,
             email=self._session.email,
             provider=self.provider,
+            stage=stage,
         )
 
 

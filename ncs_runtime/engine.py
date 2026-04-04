@@ -212,7 +212,8 @@ class RegistrationEngine:
             )
             from sentinel_browser import get_all_sentinel_tokens
 
-            otp_fetcher = mailbox_service.wait_for_verification_code
+            registration_otp_fetcher = lambda timeout: mailbox_service.wait_for_verification_code(timeout, stage="register")
+            oauth_otp_fetcher = lambda timeout: mailbox_service.wait_for_verification_code(timeout, stage="oauth")
             registration_output = io.StringIO()
             try:
                 with _capture_stage_output() as registration_output:
@@ -234,7 +235,7 @@ class RegistrationEngine:
 
                     registrar.step3_send_otp()
 
-                    otp_code = otp_fetcher(120)
+                    otp_code = registration_otp_fetcher(120)
                     if not otp_code:
                         raise Exception("未能获取验证码")
 
@@ -280,7 +281,7 @@ class RegistrationEngine:
                                 mailbox.email, chatgpt_password,
                                 registrar_session=registrar.session,
                                 cf_token=mailbox.token,
-                                otp_fetcher=otp_fetcher,
+                                otp_fetcher=oauth_otp_fetcher,
                                 provider=effective_provider,
                             )
                         oauth_logs.append(oauth_output.getvalue())

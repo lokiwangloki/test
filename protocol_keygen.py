@@ -844,15 +844,27 @@ def _bootstrap_login_session_via_browser(
                 cookie_count += 1
             result["cookie_count"] = cookie_count
             result["auth_session"] = _decode_oauth_session_cookie(session_obj)
-            result["success"] = bool(_get_session_cookie_value(session_obj, "login_session"))
+            result["success"] = _browser_bootstrap_ready_for_signup(session_obj)
             if not result["success"]:
-                result["error"] = result["error"] or "login_session missing after browser bootstrap"
+                result["error"] = result["error"] or "browser bootstrap session not ready for signup"
         except Exception as exc:
             result["error"] = str(exc)
         finally:
             browser.close()
 
     return result
+
+
+def _browser_bootstrap_ready_for_signup(session_obj) -> bool:
+    if not _get_session_cookie_value(session_obj, "login_session"):
+        return False
+    auth_session = _decode_oauth_session_cookie(session_obj)
+    if isinstance(auth_session, dict):
+        return True
+    for cookie_name in ("did", "__cf_bm", "cf_clearance", "auth_token"):
+        if _get_session_cookie_value(session_obj, cookie_name):
+            return True
+    return False
 
 
 def _load_oauth_browser_tokens(flows=None, proxy=None, timeout_ms=60000):
@@ -1391,7 +1403,7 @@ class ProtocolRegistrar:
             final_url = str(browser_bootstrap.get("final_url") or "").strip()
             cookie_count = int(browser_bootstrap.get("cookie_count") or 0)
             if browser_bootstrap.get("success"):
-                has_login_session = "login_session" in self.session.cookies
+                has_login_session = _browser_bootstrap_ready_for_signup(self.session)
                 browser_tokens = browser_bootstrap.get("browser_tokens") or {}
                 if isinstance(browser_tokens, dict):
                     self._browser_tokens.update(
@@ -1502,7 +1514,7 @@ class ProtocolRegistrar:
         resp = self.session.post(url, json=payload, headers=headers, verify=False, timeout=30)
 
         if resp.status_code == 200:
-            print("  ✅ 注册成功")
+            print("  ✅ 用户注册接口成功")
             return True
         else:
             print(f"  ❌ 失败: {resp.text[:300]}")

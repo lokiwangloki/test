@@ -2137,7 +2137,78 @@ class ProxyNormalizationTests(unittest.TestCase):
         )
         self.assertEqual(post_kwargs["headers"]["openai-sentinel-token"], '{"token":"browser-ok"}')
 
-    def test_protocol_registrar_step0_fails_when_browser_bootstrap_still_lacks_login_session(self):
+    def test_protocol_registrar_step0_requires_ready_signup_state_after_browser_bootstrap(self):
+        class FakeCookies(dict):
+            def __init__(self):
+                super().__init__()
+                self.jar = []
+
+            def set(self, name, value, domain=""):
+                del domain
+                self[name] = value
+
+        class FakeResponse:
+            def __init__(self, status_code, *, url="", text="", json_data=None):
+                self.status_code = status_code
+                self.url = url
+                self.text = text
+                self._json_data = json_data
+                self.headers = {}
+
+            def json(self):
+                if self._json_data is None:
+                    raise ValueError("no json")
+                return self._json_data
+
+        class FakeSession:
+            def __init__(self):
+                self.cookies = FakeCookies()
+                self.get_calls = []
+                self.post_calls = []
+
+            def get(self, url, **kwargs):
+                self.get_calls.append((url, kwargs))
+                return FakeResponse(
+                    403,
+                    url="https://auth.openai.com/api/oauth/oauth2/auth",
+                    text="<!DOCTYPE html><title>Just a moment...</title>",
+                )
+
+            def post(self, url, **kwargs):
+                self.post_calls.append((url, kwargs))
+                return FakeResponse(200, url=url, json_data={"page": {"type": "password"}})
+
+        def fake_browser_bootstrap(session, authorize_url, *, user_agent, proxy, timeout_ms):
+            session.cookies.set("login_session", "login-cookie", domain="auth.openai.com")
+            return {
+                "success": False,
+                "final_url": "https://auth.openai.com/create-account",
+                "cookie_count": 1,
+                "error": "browser bootstrap session not ready for signup",
+                "browser_tokens": {
+                    "authorize_continue": '{"token":"browser-ok"}',
+                },
+                "auth_session": None,
+                "sentinel_artifacts": {"flows": {}},
+            }
+
+        fake_session = FakeSession()
+        with mock.patch("protocol_keygen.create_session", return_value=fake_session):
+            registrar = protocol_keygen.ProtocolRegistrar(browser_tokens={"authorize_continue": '{"token":"ok"}'})
+        registrar.device_id = "did-123"
+
+        with mock.patch("protocol_keygen.generate_pkce", return_value=("verifier-123", "challenge-123")):
+            with mock.patch("protocol_keygen.secrets.token_urlsafe", return_value="state-123"):
+                with mock.patch(
+                    "protocol_keygen._bootstrap_login_session_via_browser",
+                    side_effect=fake_browser_bootstrap,
+                    create=True,
+                ):
+                    ok = registrar.step0_init_oauth_session("user@example.com")
+
+        self.assertFalse(ok)
+        self.assertEqual(fake_session.post_calls, [])
+
         class FakeCookies(dict):
             def __init__(self):
                 super().__init__()

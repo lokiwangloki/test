@@ -1608,6 +1608,19 @@ def _extract_verification_code(email_content: str):
     return None
 
 
+def _otp_stage_label(stage: str) -> str:
+    normalized = str(stage or "otp").strip().lower()
+    if normalized in {"register", "registration", "signup", "reg"}:
+        return "注册OTP"
+    if normalized in {"oauth", "login"}:
+        return "OAuth OTP"
+    return "OTP"
+
+
+def _otp_wait_log_interval_seconds() -> int:
+    return 15
+
+
 def wait_for_verification_email(mail_token: str, timeout: int = 120):
     start_time = time.time()
     while time.time() - start_time < timeout:
@@ -2523,12 +2536,15 @@ class ChatGPTRegister:
     # ==================== 统一等待验证码接口 ====================
 
     def wait_for_verification_email(self, mail_token: str, timeout: int = 120,
-                                     email: str = "", provider: str = ""):
+                                     email: str = "", provider: str = "", stage: str = "otp"):
         """等待并提取 OpenAI 验证码，自动根据 provider 选择轮询方式"""
         effective_provider = provider or MAIL_PROVIDER
-        self._print(f"[OTP] 等待验证码邮件 (最多 {timeout}s, provider={effective_provider})...")
+        stage_label = _otp_stage_label(stage)
+        self._print(f"[{stage_label}] 等待验证码邮件 (最多 {timeout}s, provider={effective_provider})...")
         start_time = time.time()
-        seen_key = f"{effective_provider}:{email.strip().lower()}:{str(mail_token or '').strip()}"
+        seen_key = f"{stage_label}:{effective_provider}:{email.strip().lower()}:{str(mail_token or '').strip()}"
+        log_interval = max(1, _otp_wait_log_interval_seconds())
+        last_logged_bucket = None
 
         while time.time() - start_time < timeout:
             code = None
@@ -2581,7 +2597,7 @@ class ChatGPTRegister:
                         poll_timeout_seconds=timeout,
                     )
                 except Exception as e:
-                    self._print(f"[OTP] duckmail 拉取失败: {e}")
+                    self._print(f"[{stage_label}] duckmail 拉取失败: {e}")
             else:
                 # DuckMail
                 messages = self._fetch_emails_duckmail(mail_token)
@@ -2595,14 +2611,17 @@ class ChatGPTRegister:
                             code = self._extract_verification_code(content)
 
             if code:
-                self._print(f"[OTP] 验证码: {code}")
+                self._print(f"[{stage_label}] 验证码: {code}")
                 return code
 
             elapsed = int(time.time() - start_time)
-            self._print(f"[OTP] 等待中... ({elapsed}s/{timeout}s)")
+            current_bucket = elapsed // log_interval
+            if last_logged_bucket is None or current_bucket > last_logged_bucket:
+                self._print(f"[{stage_label}] 等待中... ({elapsed}s/{timeout}s)")
+                last_logged_bucket = current_bucket
             time.sleep(3)
 
-        self._print(f"[OTP] 超时 ({timeout}s)")
+        self._print(f"[{stage_label}] 超时 ({timeout}s)")
         return None
 
     # ==================== 注册流程 ====================
