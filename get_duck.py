@@ -365,13 +365,13 @@ def fetch_duck_addresses(
             recent_api_addresses[normalized] = time.strftime("%Y-%m-%dT%H:%M:%S")
             accepted = True
             state["active_bearer_index"] = index
+            if same_count >= stop_count:
+                state["active_bearer_index"] = (index + 1) % len(bearers)
+                _duck_log(f"[duckmail] 当前 bearer 连续重复 {same_count} 次，切换到下一个 bearer")
             break
 
         bearer_states[token_key] = bearer_state
         if accepted:
-            if same_count >= stop_count:
-                state["active_bearer_index"] = (index + 1) % len(bearers)
-                _duck_log(f"[duckmail] 当前 bearer 连续重复 {same_count} 次，切换到下一个 bearer")
             break
         if same_count >= stop_count:
             state["active_bearer_index"] = (index + 1) % len(bearers)
