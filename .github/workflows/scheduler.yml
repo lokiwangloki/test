@@ -72,9 +72,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: duckaddress.txt
-          key: duck-pool-v1-${{ github.run_id }}
+          key: duck-pool-v2-${{ github.run_id }}
           restore-keys: |
-            duck-pool-v1-
+            duck-pool-v2-
 
       - name: Restore cfmail accounts cache
         if: ${{ env.MAIL_PROVIDER == 'cfmail' }}
@@ -199,7 +199,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: duckaddress.txt
-          key: duck-pool-v1-${{ github.run_id }}
+          key: duck-pool-v2-${{ github.run_id }}
 
       - name: Commit duck pool updates
         if: ${{ always() && env.MAIL_PROVIDER == 'duckmail' }}
