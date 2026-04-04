@@ -231,13 +231,32 @@ class ProxyNormalizationTests(unittest.TestCase):
             print("  [CPA] 上传完成: 成功 1 个, 失败 2 个")
 
         output = io.StringIO()
-        with mock.patch.object(ncs_register_legacy, "_upload_all_tokens_to_cpa", side_effect=fake_upload):
-            with mock.patch("sys.stdout", new=output):
-                uploaded, failed, reason = runtime_batch._run_cpa_upload_with_compact_log()
+        with mock.patch.dict("os.environ", {}, clear=False):
+            with mock.patch.object(ncs_register_legacy, "_upload_all_tokens_to_cpa", side_effect=fake_upload):
+                with mock.patch("sys.stdout", new=output):
+                    uploaded, failed, reason = runtime_batch._run_cpa_upload_with_compact_log()
 
         self.assertEqual((uploaded, failed), (1, 2))
         self.assertEqual(reason, "成功 1 个, 失败 2 个")
         self.assertEqual(output.getvalue().strip(), "[CPA上传] ❌上传失败: 成功 1 个, 失败 2 个")
+
+    def test_run_cpa_upload_replays_verbose_logs_in_github_actions(self):
+        def fake_upload():
+            print("============================================================")
+            print("  [CPA] 开始上传 3 个账号到 CPA 管理平台")
+            print("  [CPA] 上传完成: 成功 1 个, 失败 0 个")
+
+        output = io.StringIO()
+        with mock.patch.dict("os.environ", {"GITHUB_ACTIONS": "true"}, clear=False):
+            with mock.patch.object(ncs_register_legacy, "_upload_all_tokens_to_cpa", side_effect=fake_upload):
+                with mock.patch("sys.stdout", new=output):
+                    uploaded, failed, reason = runtime_batch._run_cpa_upload_with_compact_log()
+
+        self.assertEqual((uploaded, failed, reason), (1, 0, ""))
+        rendered = output.getvalue()
+        self.assertIn("[CPA] 开始上传 3 个账号到 CPA 管理平台", rendered)
+        self.assertIn("[CPA] 上传完成: 成功 1 个, 失败 0 个", rendered)
+        self.assertIn("[CPA上传] ✅上传成功", rendered)
 
     def test_otp_message_ids_are_not_reused_across_calls(self):
         register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)
@@ -1884,10 +1903,10 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIsNone(tokens)
         rescue_mock.assert_not_called()
 
-    def test_registration_engine_passes_account_tag_into_protocol_oauth(self):
+    def test_registration_engine_streams_oauth_logs_in_github_actions(self):
         mailbox_service = mock.Mock()
         mailbox_service.create_mailbox.return_value = ncs_register.MailboxSession(
-            email="tagged@example.com",
+            email="stream@example.com",
             password="",
             token="mail-token",
             provider="tempmail_lol",
@@ -1902,25 +1921,34 @@ class ProxyNormalizationTests(unittest.TestCase):
                 self.session = mock.Mock()
 
             def step0_init_oauth_session(self, email):
+                print("REG STEP0")
                 return True
 
             def step2_register_user(self, email, password):
+                print("REG STEP2")
                 return True
 
             def step3_send_otp(self):
+                print("REG STEP3")
                 return True
 
             def step4_validate_otp(self, code):
+                print("REG STEP4")
                 return True
 
             def step5_create_account(self, first_name, last_name, birthdate):
+                print("REG STEP5")
                 return True
+
+        def fake_oauth(*args, **kwargs):
+            print("OAUTH DETAIL LINE")
+            return {"access_token": "token-xyz"}
 
         fake_protocol_keygen.ProtocolRegistrar = FakeRegistrar
         fake_protocol_keygen.create_session = mock.Mock()
-        fake_protocol_keygen.perform_codex_oauth_login_http = mock.Mock(return_value={"access_token": "token-xyz"})
+        fake_protocol_keygen.perform_codex_oauth_login_http = fake_oauth
         fake_protocol_keygen.save_tokens = mock.Mock()
-        fake_protocol_keygen.save_account = mock.Mock()
+        fake_protocol_keygen.save_account = mock.Mock(side_effect=lambda *args, **kwargs: print("SAVE ACCOUNT"))
         fake_protocol_keygen.create_temp_email = mock.Mock()
         fake_protocol_keygen.PROXY = ""
         fake_protocol_keygen.COMMON_HEADERS = {"user-agent": "UA-123"}
@@ -1928,20 +1956,26 @@ class ProxyNormalizationTests(unittest.TestCase):
         fake_sentinel_browser = types.ModuleType("sentinel_browser")
         fake_sentinel_browser.get_all_sentinel_tokens = mock.Mock(return_value={"authorize_continue": '{"token":"ok"}'})
 
-        with mock.patch.object(runtime_engine, "build_mailbox_service", return_value=mailbox_service):
-            with mock.patch.object(ncs_register_legacy, "ChatGPTRegister", return_value=mock.Mock(tag="")):
-                with mock.patch.dict(sys.modules, {
-                    "protocol_keygen": fake_protocol_keygen,
-                    "sentinel_browser": fake_sentinel_browser,
-                }):
-                    with mock.patch("ncs_register_legacy._save_codex_tokens"):
-                        engine = runtime_engine.RegistrationEngine(idx=1, total=1, proxy=None, output_file="out.txt")
-                        with mock.patch.object(engine, "_append_result"):
-                            result = engine.run()
+        output = io.StringIO()
+        with mock.patch.dict("os.environ", {"GITHUB_ACTIONS": "true"}, clear=False):
+            with mock.patch.object(runtime_engine, "build_mailbox_service", return_value=mailbox_service):
+                with mock.patch.object(ncs_register_legacy, "ChatGPTRegister", return_value=mock.Mock(tag="")):
+                    with mock.patch.dict(sys.modules, {
+                        "protocol_keygen": fake_protocol_keygen,
+                        "sentinel_browser": fake_sentinel_browser,
+                    }):
+                        with mock.patch("ncs_register_legacy._save_codex_tokens"):
+                            with mock.patch("sys.stdout", new=output):
+                                engine = runtime_engine.RegistrationEngine(idx=1, total=1, proxy=None, output_file="out.txt")
+                                with mock.patch.object(engine, "_append_result"):
+                                    result = engine.run()
 
         self.assertTrue(result.success)
-        kwargs = fake_protocol_keygen.perform_codex_oauth_login_http.call_args.kwargs
-        self.assertEqual(kwargs["tag"], "tagged")
+        rendered = output.getvalue()
+        self.assertIn("REG STEP0", rendered)
+        self.assertIn("REG STEP5", rendered)
+        self.assertIn("OAUTH DETAIL LINE", rendered)
+        self.assertIn("[stream] [Oauth获取token] ✅获取Token成功", rendered)
 
         class FakeCookies(dict):
             def __init__(self):
@@ -2192,6 +2226,65 @@ class ProxyNormalizationTests(unittest.TestCase):
             register.session.post.call_args.kwargs["headers"]["openai-sentinel-token"],
             '{"token":"legacy-ac"}',
         )
+
+    def test_registration_engine_passes_account_tag_into_protocol_oauth(self):
+        mailbox_service = mock.Mock()
+        mailbox_service.create_mailbox.return_value = ncs_register.MailboxSession(
+            email="tagged@example.com",
+            password="",
+            token="mail-token",
+            provider="tempmail_lol",
+        )
+        mailbox_service.wait_for_verification_code = mock.Mock(return_value="123456")
+
+        fake_protocol_keygen = types.ModuleType("protocol_keygen")
+
+        class FakeRegistrar:
+            def __init__(self, browser_tokens=None):
+                self.browser_tokens = browser_tokens
+                self.session = mock.Mock()
+
+            def step0_init_oauth_session(self, email):
+                return True
+
+            def step2_register_user(self, email, password):
+                return True
+
+            def step3_send_otp(self):
+                return True
+
+            def step4_validate_otp(self, code):
+                return True
+
+            def step5_create_account(self, first_name, last_name, birthdate):
+                return True
+
+        fake_protocol_keygen.ProtocolRegistrar = FakeRegistrar
+        fake_protocol_keygen.create_session = mock.Mock()
+        fake_protocol_keygen.perform_codex_oauth_login_http = mock.Mock(return_value={"access_token": "token-xyz"})
+        fake_protocol_keygen.save_tokens = mock.Mock()
+        fake_protocol_keygen.save_account = mock.Mock()
+        fake_protocol_keygen.create_temp_email = mock.Mock()
+        fake_protocol_keygen.PROXY = ""
+        fake_protocol_keygen.COMMON_HEADERS = {"user-agent": "UA-123"}
+
+        fake_sentinel_browser = types.ModuleType("sentinel_browser")
+        fake_sentinel_browser.get_all_sentinel_tokens = mock.Mock(return_value={"authorize_continue": '{"token":"ok"}'})
+
+        with mock.patch.object(runtime_engine, "build_mailbox_service", return_value=mailbox_service):
+            with mock.patch.object(ncs_register_legacy, "ChatGPTRegister", return_value=mock.Mock(tag="")):
+                with mock.patch.dict(sys.modules, {
+                    "protocol_keygen": fake_protocol_keygen,
+                    "sentinel_browser": fake_sentinel_browser,
+                }):
+                    with mock.patch("ncs_register_legacy._save_codex_tokens"):
+                        engine = runtime_engine.RegistrationEngine(idx=1, total=1, proxy=None, output_file="out.txt")
+                        with mock.patch.object(engine, "_append_result"):
+                            result = engine.run()
+
+        self.assertTrue(result.success)
+        kwargs = fake_protocol_keygen.perform_codex_oauth_login_http.call_args.kwargs
+        self.assertEqual(kwargs["tag"], "tagged")
 
     def test_run_register_does_not_treat_auth_authorize_url_with_chatgpt_redirect_query_as_complete(self):
         register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)

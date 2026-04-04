@@ -2,6 +2,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import io
 import os
 import re
+import sys
 import threading
 import time
 from contextlib import redirect_stderr, redirect_stdout
@@ -12,6 +13,25 @@ from .engine import RegistrationEngine, _extract_stage_failure_reason
 
 _MAX_CONSECUTIVE_FAILURES = 30
 _CPA_UPLOAD_RESULT_RE = re.compile(r"上传完成:\s*成功\s*(\d+)\s*个,\s*失败\s*(\d+)\s*个")
+
+
+class _StreamTee:
+    def __init__(self, mirror, buffer):
+        self._mirror = mirror
+        self._buffer = buffer
+
+    def write(self, text):
+        written = self._buffer.write(text)
+        self._mirror.write(text)
+        return written
+
+    def flush(self):
+        self._buffer.flush()
+        self._mirror.flush()
+
+
+def _ci_verbose_logging_enabled() -> bool:
+    return bool(str(os.getenv("GITHUB_ACTIONS", "") or "").strip() or str(os.getenv("CI", "") or "").strip())
 
 
 def _cfmail_active_domain_target() -> int:
@@ -69,8 +89,14 @@ def _sync_cfmail_accounts_with_env_credentials(provisioner) -> bool:
 
 def _run_cpa_upload_with_compact_log() -> tuple[int, int, str]:
     buffer = io.StringIO()
-    with redirect_stdout(buffer), redirect_stderr(buffer):
-        legacy._upload_all_tokens_to_cpa()
+    if _ci_verbose_logging_enabled():
+        stdout_tee = _StreamTee(sys.stdout, buffer)
+        stderr_tee = _StreamTee(sys.stderr, buffer)
+        with redirect_stdout(stdout_tee), redirect_stderr(stderr_tee):
+            legacy._upload_all_tokens_to_cpa()
+    else:
+        with redirect_stdout(buffer), redirect_stderr(buffer):
+            legacy._upload_all_tokens_to_cpa()
 
     output = buffer.getvalue()
     match = _CPA_UPLOAD_RESULT_RE.search(output)

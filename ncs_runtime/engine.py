@@ -1,5 +1,7 @@
 import io
+import os
 import re
+import sys
 import time
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
@@ -125,6 +127,26 @@ def _extract_stage_failure_reason(output: str, fallback: str = "") -> str:
 @contextmanager
 def _capture_stage_output():
     buffer = io.StringIO()
+    if str(os.getenv("GITHUB_ACTIONS", "") or "").strip() or str(os.getenv("CI", "") or "").strip():
+        class _StageTee:
+            def __init__(self, mirror, buf):
+                self._mirror = mirror
+                self._buf = buf
+
+            def write(self, text):
+                written = self._buf.write(text)
+                self._mirror.write(text)
+                return written
+
+            def flush(self):
+                self._buf.flush()
+                self._mirror.flush()
+
+        stdout_tee = _StageTee(sys.stdout, buffer)
+        stderr_tee = _StageTee(sys.stderr, buffer)
+        with redirect_stdout(stdout_tee), redirect_stderr(stderr_tee):
+            yield buffer
+        return
     with redirect_stdout(buffer), redirect_stderr(buffer):
         yield buffer
 
