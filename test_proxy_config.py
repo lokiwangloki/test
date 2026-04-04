@@ -1340,12 +1340,15 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.email, "user@example.com")
         self.assertTrue(result.oauth_ok)
+        mailbox_service.wait_for_verification_code.assert_any_call(120, stage="register")
         fake_protocol_keygen.perform_codex_oauth_login_http.assert_called_once()
         fake_protocol_keygen.save_tokens.assert_called_once()
         kwargs = fake_protocol_keygen.perform_codex_oauth_login_http.call_args.kwargs
         self.assertEqual(kwargs["cf_token"], "mail-token")
         self.assertEqual(kwargs["provider"], "cfmail")
-        self.assertIs(kwargs["otp_fetcher"], mailbox_service.wait_for_verification_code)
+        self.assertIsNotNone(kwargs["otp_fetcher"])
+        kwargs["otp_fetcher"](120)
+        mailbox_service.wait_for_verification_code.assert_called_with(120, stage="oauth")
 
     def test_fetch_codex_session_tokens_falls_back_to_chatgpt_session(self):
         register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)

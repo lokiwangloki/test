@@ -1598,7 +1598,7 @@ class ProtocolRegistrar:
         resp = self.session.post(url, json=payload, headers=headers, verify=False, timeout=30)
 
         if resp.status_code == 200:
-            print("  ✅ 注册成功")
+            print("  ✅ 用户注册接口成功")
             return True
         else:
             print(f"  ❌ 失败: {resp.text[:300]}")
