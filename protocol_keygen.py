@@ -1140,11 +1140,13 @@ def _try_workspace_org_selection_for_code(
     )
 
 
-def _try_registrar_session_oauth(email, registrar_session, authorize_url, code_verifier):
+def _try_registrar_session_oauth(email, registrar_session, authorize_url, code_verifier, log_prefix=""):
     if registrar_session is None:
         return None
 
-    print("  [existing-session] 尝试复用注册会话获取 token...")
+    prefix = str(log_prefix or "")
+    session_prefix = f"{prefix}  [existing-session]"
+    print(f"{session_prefix} 尝试复用注册会话获取 token...")
 
     auth_code = None
     session_hint_url = "https://auth.openai.com/add-phone"
@@ -1156,7 +1158,7 @@ def _try_registrar_session_oauth(email, registrar_session, authorize_url, code_v
             verify=False,
             timeout=30,
         )
-        print(f"  [existing-session] authorize: {response.status_code}")
+        print(f"{session_prefix} authorize: {response.status_code}")
         location = str(response.headers.get("Location") or "").strip()
         if location:
             session_hint_url = urljoin(authorize_url, location)
@@ -1177,15 +1179,15 @@ def _try_registrar_session_oauth(email, registrar_session, authorize_url, code_v
         if matched:
             auth_code = _extract_authorization_code_from_url(matched.group(1))
         else:
-            print(f"  [existing-session] authorize 失败: {exc}")
+            print(f"{session_prefix} authorize 失败: {exc}")
 
     if auth_code:
-        print("  [existing-session] ✅ 获取到 authorization code")
+        print(f"{session_prefix} ✅ 获取到 authorization code")
         tokens = codex_exchange_code(auth_code, code_verifier)
         if tokens:
-            print("  [existing-session] ✅ 使用注册会话换取 token 成功")
+            print(f"{session_prefix} ✅ 使用注册会话换取 token 成功")
             return tokens
-        print("  [existing-session] code 交换失败，继续尝试 session endpoint")
+        print(f"{session_prefix} code 交换失败，继续尝试 session endpoint")
 
     try:
         session_response = registrar_session.get(
@@ -1198,7 +1200,7 @@ def _try_registrar_session_oauth(email, registrar_session, authorize_url, code_v
             verify=False,
             timeout=15,
         )
-        print(f"  [existing-session] session endpoint: {session_response.status_code}")
+        print(f"{session_prefix} session endpoint: {session_response.status_code}")
         if session_response.status_code == 200:
             try:
                 session_data = session_response.json()
@@ -1206,26 +1208,118 @@ def _try_registrar_session_oauth(email, registrar_session, authorize_url, code_v
                 session_data = {}
             tokens = _build_codex_session_tokens_from_session_data(email, session_data)
             if tokens:
-                print("  [existing-session] ✅ 直接从 session endpoint 获取到 token")
+                print(f"{session_prefix} ✅ 直接从 session endpoint 获取到 token")
                 return tokens
     except Exception as exc:
-        print(f"  [existing-session] session endpoint 失败: {exc}")
+        print(f"{session_prefix} session endpoint 失败: {exc}")
 
     auth_code = _try_workspace_org_selection_for_code(
         registrar_session,
         session_hint_url,
         device_id=_get_session_cookie_value(registrar_session, "oai-did"),
-        log_prefix="  [existing-session] ",
+        log_prefix=f"{session_prefix} ",
     )
     if auth_code:
-        print("  [existing-session] ✅ 获取到 authorization code")
+        print(f"{session_prefix} ✅ 获取到 authorization code")
         tokens = codex_exchange_code(auth_code, code_verifier)
         if tokens:
-            print("  [existing-session] ✅ 使用注册会话换取 token 成功")
+            print(f"{session_prefix} ✅ 使用注册会话换取 token 成功")
             return tokens
-        print("  [existing-session] code 交换失败，继续尝试 fresh login")
+        print(f"{session_prefix} code 交换失败，继续尝试 fresh login")
 
-    print("  [existing-session] 未能直接获取 token，回退浏览器辅助登录")
+    print(f"{session_prefix} 未能直接获取 token，回退浏览器辅助登录")
+    return None
+
+
+def _is_add_phone_url(candidate_url: str) -> bool:
+    raw = str(candidate_url or "").strip()
+    if not raw:
+        return False
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return "add-phone" in raw
+    path = str(parsed.path or "").rstrip("/")
+    return parsed.netloc == "auth.openai.com" and path == "/add-phone"
+
+
+def _classify_add_phone_gate(session_obj, final_url: str, *, referer: str = "") -> dict:
+    normalized_url = str(final_url or "").strip()
+    info = {
+        "matched": _is_add_phone_url(normalized_url),
+        "soft": False,
+        "reason": "",
+        "workspace_count": 0,
+        "payload_keys": [],
+        "direct_session_keys": [],
+    }
+    if not info["matched"]:
+        return info
+
+    payload = _load_oauth_session_payload(
+        session_obj,
+        referer=referer or normalized_url or "https://auth.openai.com/add-phone",
+        log_prefix="",
+    )
+    if isinstance(payload, dict):
+        info["payload_keys"] = sorted(str(key) for key in payload.keys())
+        workspaces = payload.get("workspaces") or []
+        if isinstance(workspaces, list):
+            info["workspace_count"] = len(workspaces)
+            if workspaces:
+                info["soft"] = True
+                info["reason"] = "workspace_available"
+                return info
+
+    try:
+        session_response = session_obj.get(
+            "https://chatgpt.com/api/auth/session",
+            headers={
+                "accept": "application/json",
+                "referer": "https://chatgpt.com/",
+            },
+            allow_redirects=True,
+            verify=False,
+            timeout=15,
+        )
+        if session_response.status_code == 200:
+            try:
+                session_data = session_response.json()
+            except Exception:
+                session_data = {}
+            if isinstance(session_data, dict):
+                direct_keys = sorted(str(key) for key in session_data.keys())
+                info["direct_session_keys"] = direct_keys
+                if _build_codex_session_tokens_from_session_data("probe@example.com", session_data):
+                    info["soft"] = True
+                    info["reason"] = "session_token_available"
+                    return info
+                direct_key_set = {key for key in direct_keys if key}
+                if direct_key_set and direct_key_set != {"WARNING_BANNER"}:
+                    info["soft"] = True
+                    info["reason"] = "direct_session_metadata_available"
+                    return info
+    except Exception:
+        pass
+
+    info["reason"] = "workspace_count=0_warning_banner_only"
+    return info
+
+
+def _try_add_phone_rescue_oauth(email, registrar_session, authorize_url, code_verifier, *, tag: str = ""):
+    prefix = f"[{tag}] [Oauth获取token] " if tag else "[Oauth获取token] "
+    print(f"{prefix}尝试救回")
+    tokens = _try_registrar_session_oauth(
+        email,
+        registrar_session,
+        authorize_url,
+        code_verifier,
+        log_prefix=prefix,
+    )
+    if tokens and tokens.get("access_token"):
+        print(f"{prefix}✅ 救回成功")
+        return tokens
+    print(f"{prefix}❌救回失败。")
     return None
 
 
@@ -1807,6 +1901,7 @@ def perform_codex_oauth_login_http(
     cf_token=None,
     otp_fetcher=None,
     provider="",
+    tag="",
 ):
     """
     纯 HTTP 方式执行 Codex OAuth 登录获取 Token（零浏览器）。
@@ -2380,6 +2475,35 @@ def perform_codex_oauth_login_http(
             auth_code = _extract_code_from_url(resp.url)
             if auth_code:
                 print(f"  ✅ 最终 URL 中提取到 code")
+            elif _is_add_phone_url(str(resp.url or "")):
+                add_phone_state = _classify_add_phone_gate(
+                    registrar_session,
+                    str(resp.url or ""),
+                    referer=consent_url,
+                ) if registrar_session is not None else {"matched": True, "soft": False, "reason": "no_registrar_session"}
+                workspace_count = int(add_phone_state.get("workspace_count") or 0)
+                direct_keys = add_phone_state.get("direct_session_keys") or []
+                print(
+                    "  add-phone 状态: "
+                    f"soft={'Y' if add_phone_state.get('soft') else 'N'}, "
+                    f"workspace_count={workspace_count}, "
+                    f"direct_session_keys={direct_keys or []}, "
+                    f"reason={add_phone_state.get('reason') or 'unknown'}"
+                )
+                if add_phone_state.get("soft") and registrar_session is not None:
+                    rescued_tokens = _try_add_phone_rescue_oauth(
+                        email,
+                        registrar_session,
+                        authorize_url,
+                        code_verifier,
+                        tag=tag,
+                    )
+                    if rescued_tokens:
+                        return rescued_tokens
+                elif add_phone_state.get("matched"):
+                    prefix = f"[{tag}] [Oauth获取token] " if tag else "[Oauth获取token] "
+                    print(f"{prefix}尝试救回")
+                    print(f"{prefix}❌救回失败。")
             # 检查重定向链
             if not auth_code and resp.history:
                 for r in resp.history:

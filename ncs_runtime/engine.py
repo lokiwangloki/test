@@ -282,6 +282,7 @@ class RegistrationEngine:
                                 cf_token=mailbox.token,
                                 otp_fetcher=otp_fetcher,
                                 provider=effective_provider,
+                                tag=account_tag,
                             )
                         oauth_logs.append(oauth_output.getvalue())
                         if tokens and tokens.get("access_token"):
