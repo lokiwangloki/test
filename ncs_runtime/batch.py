@@ -293,10 +293,8 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                             print(f"[{account_label}] [结果] ❌失败{detail}")
                         if _is_duck_pool_exhausted(err):
                             pending_indexes.clear()
-                            for pending_future in list(active_futures.keys()):
-                                pending_future.cancel()
                             with legacy._print_lock:
-                                print("[duckmail] 地址池补充重试 3 次后仍为空，提前结束本轮任务")
+                                print("[duckmail] 地址池补充重试 3 次后仍为空，停止投放新任务，等待已启动任务完成")
                         del error_code
                         _record_failure_and_maybe_rotate()
                 except Exception as error:

@@ -1329,6 +1329,53 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIn("[ok@example.com] [结果] ✅成功", rendered)
         self.assertIn("[bad@example.com] [结果] ❌失败: OAuth Token 获取失败", rendered)
 
+    def test_run_batch_stops_launching_new_work_but_keeps_active_duck_failures_running(self):
+        output = io.StringIO()
+        submitted = []
+
+        class FakeFuture:
+            def __init__(self, result):
+                self._result = result
+                self.cancel_called = False
+
+            def result(self):
+                return self._result
+
+            def cancel(self):
+                self.cancel_called = True
+
+        class FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                del args, kwargs
+                self._results = [
+                    FakeFuture((False, "first@duck.com", "", "duck 邮箱地址池不可用: empty")),
+                    FakeFuture((False, "second@duck.com", "", "duck 邮箱地址池不可用: empty")),
+                ]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                del fn, args, kwargs
+                future = self._results.pop(0)
+                submitted.append(future)
+                return future
+
+        with mock.patch.object(ncs_register_legacy, "MAIL_PROVIDER", "duckmail"):
+            with mock.patch.object(ncs_register_legacy, "UPLOAD_API_URL", ""):
+                with mock.patch.object(runtime_batch, "ThreadPoolExecutor", FakeExecutor):
+                    with mock.patch.object(runtime_batch, "wait", side_effect=lambda futures, return_when=None: (set(futures), set())):
+                        with mock.patch("sys.stdout", new=output):
+                            runtime_batch.run_batch(total_accounts=5, max_workers=2)
+
+        rendered = output.getvalue()
+        self.assertIn("停止投放新任务，等待已启动任务完成", rendered)
+        self.assertEqual(len(submitted), 2)
+        self.assertFalse(any(future.cancel_called for future in submitted))
+
         rotate_kwargs = []
 
         class FakeProvisioner:
