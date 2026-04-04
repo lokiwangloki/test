@@ -7,6 +7,8 @@ on:
         description: '手动指定本次注册数量；留空则按缺口自动补足'
         required: false
         default: ''
+  schedule:
+    - cron: '3 */2 * * *'
 
 jobs:
   run-scheduler:
