@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -51,24 +52,37 @@ def load_duck_addresses(address_file: str | None = None) -> list[str]:
     ]
 
 
-def _last_seen_file(address_file: str | None = None) -> Path:
+def _state_file(address_file: str | None = None) -> Path:
     path = resolve_output_file(address_file)
-    return path.with_name("duck_last_seen.txt")
+    return path.with_name("duck_state.json")
 
 
-def load_duck_last_seen(address_file: str | None = None) -> str:
-    path = _last_seen_file(address_file)
+def load_duck_state(address_file: str | None = None) -> dict:
+    path = _state_file(address_file)
     if not path.exists():
-        return ""
-    return str(path.read_text(encoding="utf-8").strip() or "")
+        return {"bearers": {}, "recent_api_addresses": {}}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"bearers": {}, "recent_api_addresses": {}}
+    if not isinstance(data, dict):
+        return {"bearers": {}, "recent_api_addresses": {}}
+    bearers = data.get("bearers") if isinstance(data.get("bearers"), dict) else {}
+    recent = data.get("recent_api_addresses") if isinstance(data.get("recent_api_addresses"), dict) else {}
+    return {"bearers": bearers, "recent_api_addresses": recent}
 
 
-def save_duck_last_seen(address: str, address_file: str | None = None) -> None:
-    normalized = str(address or "").strip().lower()
-    if not normalized:
-        return
-    path = _last_seen_file(address_file)
-    path.write_text(normalized + "\n", encoding="utf-8")
+def save_duck_state(state: dict, address_file: str | None = None) -> None:
+    payload = {
+        "bearers": state.get("bearers") if isinstance(state.get("bearers"), dict) else {},
+        "recent_api_addresses": state.get("recent_api_addresses") if isinstance(state.get("recent_api_addresses"), dict) else {},
+    }
+    path = _state_file(address_file)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _bearer_state_key(bearer: str) -> str:
+    return hashlib.sha256(str(bearer or "").encode("utf-8")).hexdigest()
 
 
 def _write_duck_addresses(addresses: list[str], address_file: str | None = None) -> Path:
@@ -103,7 +117,12 @@ def ensure_duck_address_available(
         if addresses:
             chosen = addresses[0]
             _write_duck_addresses(addresses[1:], address_file)
-            save_duck_last_seen(chosen, address_file)
+            state = load_duck_state(address_file)
+            recent = state.get("recent_api_addresses") or {}
+            if isinstance(recent, dict):
+                recent[str(chosen).strip().lower()] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                state["recent_api_addresses"] = recent
+                save_duck_state(state, address_file)
             return chosen
 
     last_error: Exception | None = None
@@ -124,7 +143,12 @@ def ensure_duck_address_available(
                 if addresses:
                     chosen = addresses[0]
                     _write_duck_addresses(addresses[1:], address_file)
-                    save_duck_last_seen(chosen, address_file)
+                    state = load_duck_state(address_file)
+                    recent = state.get("recent_api_addresses") or {}
+                    if isinstance(recent, dict):
+                        recent[str(chosen).strip().lower()] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                        state["recent_api_addresses"] = recent
+                        save_duck_state(state, address_file)
                     return chosen
         if attempt < attempts:
             print(f"[duckmail] 地址池为空，第 {attempt}/{attempts} 次补充失败，重试中...")
@@ -149,8 +173,15 @@ def remove_duck_addresses(addresses: list[str] | tuple[str, ...] | set[str], add
             return 0
         filtered = [item for item in existing if item.strip().lower() not in normalized]
         removed = len(existing) - len(filtered)
+        state = load_duck_state(address_file)
+        recent = state.get("recent_api_addresses") or {}
+        if isinstance(recent, dict):
+            for item in normalized:
+                recent[item] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            state["recent_api_addresses"] = recent
         if removed > 0:
             _write_duck_addresses(filtered, address_file)
+        save_duck_state(state, address_file)
         return removed
 
 
@@ -271,37 +302,62 @@ def fetch_duck_addresses(
 
     url = str(api_url or os.environ.get("DUCK_EMAIL_API_URL", DEFAULT_API_URL)).strip() or DEFAULT_API_URL
     existing_addresses = set(load_duck_addresses(output_file))
-    last_seen = load_duck_last_seen(output_file)
-    all_addresses: list[str] = []
+    state = load_duck_state(output_file)
+    recent_api_addresses = state.get("recent_api_addresses") if isinstance(state.get("recent_api_addresses"), dict) else {}
+    bearer_states = state.get("bearers") if isinstance(state.get("bearers"), dict) else {}
+    to_add: list[str] = []
+    seen = set(existing_addresses)
     last_error: Exception | None = None
 
     print("=== 开始自动获取 DuckDuckGo 邮箱地址（追加模式）===")
     for index, token in enumerate(bearers, start=1):
+        token_key = _bearer_state_key(token)
+        bearer_state = bearer_states.get(token_key) if isinstance(bearer_states.get(token_key), dict) else {}
+        last_seen = str(bearer_state.get("last_seen") or "").strip().lower()
+        last_accepted = str(bearer_state.get("last_accepted") or "").strip().lower()
         try:
-            all_addresses = _collect_duck_addresses_with_bearer(
+            candidates = _collect_duck_addresses_with_bearer(
                 curl_requests,
                 bearer=token,
                 api_url=url,
                 stop_count=stop_count,
                 delay_seconds=delay_seconds,
             )
-            break
         except Exception as exc:
             last_error = exc
             print(f"[!] Duck bearer {index}/{len(bearers)} 获取失败: {exc}")
-    else:
-        raise RuntimeError(f"所有 Duck bearer 均不可用，已尝试 {len(bearers)} 个: {last_error}")
-
-    seen = set(existing_addresses)
-    to_add: list[str] = []
-    for item in all_addresses:
-        normalized = item.strip().lower()
-        if last_seen and normalized == last_seen:
-            print(f"[duckmail] 跳过与 last_seen 重复的地址: {item}")
             continue
-        if item not in seen:
+
+        accepted = False
+        for item in candidates:
+            normalized = item.strip().lower()
+            bearer_state["last_seen"] = normalized
+            if normalized == last_seen or normalized == last_accepted:
+                print(f"[duckmail] 跳过 bearer 重复地址: {item}")
+                continue
+            if normalized in recent_api_addresses:
+                print(f"[duckmail] 跳过近期已用地址: {item}")
+                continue
+            if item in seen:
+                print(f"[duckmail] 跳过池内已存在地址: {item}")
+                continue
             to_add.append(item)
             seen.add(item)
+            bearer_state["last_accepted"] = normalized
+            recent_api_addresses[normalized] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            accepted = True
+            break
+
+        bearer_states[token_key] = bearer_state
+        if accepted:
+            break
+
+    if not to_add and last_error is not None:
+        raise RuntimeError(f"所有 Duck bearer 均不可用，已尝试 {len(bearers)} 个: {last_error}")
+
+    state["bearers"] = bearer_states
+    state["recent_api_addresses"] = recent_api_addresses
+    save_duck_state(state, output_file)
 
     if to_add:
         path = resolve_output_file(output_file)

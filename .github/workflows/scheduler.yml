@@ -8,6 +8,9 @@ on:
         required: false
         default: ''
 
+permissions:
+  contents: write
+
 jobs:
   run-scheduler:
     runs-on: ubuntu-latest
@@ -73,10 +76,10 @@ jobs:
         with:
           path: |
             duckaddress.txt
-            duck_last_seen.txt
-          key: duck-pool-v2-${{ github.run_id }}
+            duck_state.json
+          key: duck-pool-v3-${{ github.run_id }}
           restore-keys: |
-            duck-pool-v2-
+            duck-pool-v3-
 
       - name: Restore cfmail accounts cache
         if: ${{ env.MAIL_PROVIDER == 'cfmail' }}
@@ -202,18 +205,18 @@ jobs:
         with:
           path: |
             duckaddress.txt
-            duck_last_seen.txt
-          key: duck-pool-v2-${{ github.run_id }}
+            duck_state.json
+          key: duck-pool-v3-${{ github.run_id }}
 
       - name: Commit duck pool updates
         if: ${{ always() && env.MAIL_PROVIDER == 'duckmail' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          if ! git diff --quiet -- duckaddress.txt duck_last_seen.txt; then
+          if ! git diff --quiet -- duckaddress.txt duck_state.json; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add duckaddress.txt duck_last_seen.txt
+            git add duckaddress.txt duck_state.json
             git commit -m "Update duck pool after scheduler run"
             git push origin HEAD:${GITHUB_REF_NAME}
           else
