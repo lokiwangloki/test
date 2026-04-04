@@ -264,21 +264,32 @@ class RegistrationEngine:
 
             oauth_ok = True
             if legacy.ENABLE_OAUTH:
-                oauth_output = io.StringIO()
-                tokens = None
                 try:
-                    with _capture_stage_output() as oauth_output:
-                        time.sleep(5)
-                        tokens = perform_codex_oauth_login_http(
-                            mailbox.email, chatgpt_password,
-                            registrar_session=registrar.session,
-                            cf_token=mailbox.token,
-                            otp_fetcher=otp_fetcher,
-                            provider=effective_provider,
-                        )
+                    oauth_logs: list[str] = []
+                    tokens = None
+                    for oauth_attempt in range(2):
+                        oauth_output = io.StringIO()
+                        with _capture_stage_output() as oauth_output:
+                            if oauth_attempt == 0:
+                                time.sleep(5)
+                            else:
+                                with legacy._print_lock:
+                                    print(f"[{account_tag}] [Oauth获取token] ⚠️首次失败，重试一次...")
+                                time.sleep(3)
+                            tokens = perform_codex_oauth_login_http(
+                                mailbox.email, chatgpt_password,
+                                registrar_session=registrar.session,
+                                cf_token=mailbox.token,
+                                otp_fetcher=otp_fetcher,
+                                provider=effective_provider,
+                            )
+                        oauth_logs.append(oauth_output.getvalue())
+                        if tokens and tokens.get("access_token"):
+                            break
                     oauth_ok = bool(tokens and tokens.get("access_token"))
                 except Exception as error:
-                    reason = _extract_stage_failure_reason(oauth_output.getvalue(), str(error))
+                    combined_output = "\n".join(log for log in oauth_logs if log)
+                    reason = _extract_stage_failure_reason(combined_output, str(error))
                     _print_stage_status(account_tag, "Oauth获取token", False, "获取Token成功", "获取失败", reason)
                     if legacy.OAUTH_REQUIRED:
                         return RegistrationResult(
@@ -297,7 +308,8 @@ class RegistrationEngine:
                         legacy._save_codex_tokens(mailbox.email, tokens)
                         _print_stage_status(account_tag, "Oauth获取token", True, "获取Token成功", "获取失败")
                     else:
-                        reason = _extract_stage_failure_reason(oauth_output.getvalue(), "OAuth Token 获取失败")
+                        combined_output = "\n".join(log for log in oauth_logs if log)
+                        reason = _extract_stage_failure_reason(combined_output, "OAuth Token 获取失败")
                         _print_stage_status(account_tag, "Oauth获取token", False, "获取Token成功", "获取失败", reason)
                         if legacy.OAUTH_REQUIRED:
                             return RegistrationResult(

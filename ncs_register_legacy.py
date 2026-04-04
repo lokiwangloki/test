@@ -1127,9 +1127,13 @@ def _upload_all_tokens_to_cpa():
     print(f"\n{'='*60}\n  [CPA] 开始上传 {len(json_files)} 个账号到 CPA 管理平台\n{'='*60}")
     uploaded = 0
     failed = 0
+    uploaded_emails = []
     for filename in json_files:
         filepath = os.path.join(token_dir, filename)
         if _upload_token_json(filepath):
+            email = filename[:-5] if filename.endswith(".json") else ""
+            if email:
+                uploaded_emails.append(email)
             try:
                 os.remove(filepath)
             except Exception:
@@ -1137,6 +1141,16 @@ def _upload_all_tokens_to_cpa():
             uploaded += 1
         else:
             failed += 1
+
+    duck_uploaded_emails = [email for email in uploaded_emails if email.strip().lower().endswith("@duck.com")]
+    if duck_uploaded_emails:
+        try:
+            import get_duck
+            removed = get_duck.remove_duck_addresses(duck_uploaded_emails)
+            print(f"  [Duck池] 已清理 {removed}/{len(duck_uploaded_emails)} 个已上传邮箱")
+        except Exception as e:
+            print(f"  [Duck池] ⚠️ 清理已上传邮箱失败: {e}")
+
     print(f"\n  [CPA] 上传完成: 成功 {uploaded} 个, 失败 {failed} 个\n{'='*60}")
 
 
@@ -2059,14 +2073,9 @@ class ChatGPTRegister:
             raise Exception(f"加载 get_duck.py 失败: {e}") from e
 
         try:
-            email = get_duck.take_duck_address()
+            email = get_duck.ensure_duck_address_available(refill_attempts=3, stop_count=1, delay_seconds=0)
         except Exception as first_error:
-            bearer = str(os.environ.get("DUCK_EMAIL_BEARER", "")).strip()
-            if not bearer:
-                raise Exception(f"duck 邮箱地址池不可用: {first_error}") from first_error
-            self._print("[duckmail] 地址池为空，尝试补充 duck 邮箱...")
-            get_duck.fetch_duck_addresses()
-            email = get_duck.take_duck_address()
+            raise Exception(f"duck 邮箱地址池不可用: {first_error}") from first_error
 
         self._print(f"[duckmail] 创建邮箱成功: {email}")
         return email, "", email

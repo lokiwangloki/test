@@ -481,6 +481,15 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIn("Diagnose Wildmail", workflow)
         self.assertIn("continue-on-error: true", workflow)
 
+    def test_scheduler_workflow_restores_and_saves_duck_pool_cache(self):
+        workflow = Path(".github/workflows/scheduler.yml").read_text(encoding="utf-8")
+        self.assertIn("Restore duck pool cache", workflow)
+        self.assertIn("path: duckaddress.txt", workflow)
+        self.assertIn("duck-pool-v1-", workflow)
+        self.assertIn("Save duck pool cache", workflow)
+        self.assertIn("Commit duck pool updates", workflow)
+        self.assertIn("git push origin HEAD:${GITHUB_REF_NAME}", workflow)
+
     def test_mailbox_service_factory_supports_cfmail_lamail_tempmail_and_wildmail(self):
         fake_register = object()
         self.assertIsInstance(
@@ -547,6 +556,50 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         self.assertEqual(chosen, "afar-enrage-curvy@duck.com")
         self.assertEqual(remaining, "poem-jarring-curve@duck.com\n")
+
+    def test_remove_duck_addresses_deletes_uploaded_addresses_from_pool(self):
+        pool_file = Path("/tmp/test_duckaddress_remove_pool.txt")
+        pool_file.write_text(
+            "alpha@duck.com\nbeta@duck.com\ngamma@duck.com\n",
+            encoding="utf-8",
+        )
+
+        try:
+            removed = get_duck.remove_duck_addresses(["beta@duck.com", "missing@duck.com"], address_file=str(pool_file))
+            remaining = pool_file.read_text(encoding="utf-8")
+        finally:
+            pool_file.unlink(missing_ok=True)
+
+        self.assertEqual(removed, 1)
+        self.assertEqual(remaining, "alpha@duck.com\ngamma@duck.com\n")
+
+    def test_ensure_duck_address_available_fetches_when_pool_is_empty(self):
+        pool_file = Path("/tmp/test_duckaddress_refill_pool.txt")
+        pool_file.write_text("", encoding="utf-8")
+
+        try:
+            with mock.patch("get_duck.fetch_duck_addresses", side_effect=lambda **kwargs: pool_file.write_text("fresh@duck.com\n", encoding="utf-8") or ["fresh@duck.com"]):
+                chosen = get_duck.ensure_duck_address_available(address_file=str(pool_file))
+                remaining = pool_file.read_text(encoding="utf-8")
+        finally:
+            pool_file.unlink(missing_ok=True)
+
+        self.assertEqual(chosen, "fresh@duck.com")
+        self.assertEqual(remaining, "")
+
+    def test_ensure_duck_address_available_retries_three_times_before_failing(self):
+        pool_file = Path("/tmp/test_duckaddress_refill_fail_pool.txt")
+        pool_file.write_text("", encoding="utf-8")
+
+        try:
+            with mock.patch("get_duck.fetch_duck_addresses", side_effect=RuntimeError("boom")) as fetch_mock:
+                with self.assertRaises(RuntimeError) as exc:
+                    get_duck.ensure_duck_address_available(address_file=str(pool_file), refill_attempts=3)
+        finally:
+            pool_file.unlink(missing_ok=True)
+
+        self.assertEqual(fetch_mock.call_count, 3)
+        self.assertIn("已重试 3 次", str(exc.exception))
 
     def test_load_duck_bearers_supports_json_array_secret(self):
         with mock.patch.dict(
@@ -1370,7 +1423,68 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(fetch_args.kwargs["provider"], "tempmail_lol")
         self.assertIs(fetch_args.kwargs["otp_fetcher"], mailbox_service.wait_for_verification_code)
 
-    def test_registration_engine_passes_mailbox_fetcher_to_protocol_oauth(self):
+    def test_registration_engine_retries_oauth_once_after_first_failure(self):
+        mailbox_service = mock.Mock()
+        mailbox_service.create_mailbox.return_value = ncs_register.MailboxSession(
+            email="retry@example.com",
+            password="",
+            token="mail-token",
+            provider="duckmail",
+        )
+        mailbox_service.wait_for_verification_code = mock.Mock(return_value="123456")
+
+        fake_protocol_keygen = types.ModuleType("protocol_keygen")
+
+        class FakeRegistrar:
+            def __init__(self, browser_tokens=None):
+                self.browser_tokens = browser_tokens
+                self.session = mock.Mock()
+
+            def step0_init_oauth_session(self, email):
+                return True
+
+            def step2_register_user(self, email, password):
+                return True
+
+            def step3_send_otp(self):
+                return True
+
+            def step4_validate_otp(self, code):
+                return True
+
+            def step5_create_account(self, first_name, last_name, birthdate):
+                return True
+
+        oauth_mock = mock.Mock(side_effect=[None, {"access_token": "token-retry"}])
+        fake_protocol_keygen.ProtocolRegistrar = FakeRegistrar
+        fake_protocol_keygen.create_session = mock.Mock()
+        fake_protocol_keygen.perform_codex_oauth_login_http = oauth_mock
+        fake_protocol_keygen.save_tokens = mock.Mock()
+        fake_protocol_keygen.save_account = mock.Mock()
+        fake_protocol_keygen.create_temp_email = mock.Mock()
+        fake_protocol_keygen.PROXY = ""
+        fake_protocol_keygen.COMMON_HEADERS = {"user-agent": "UA-123"}
+
+        fake_sentinel_browser = types.ModuleType("sentinel_browser")
+        fake_sentinel_browser.get_all_sentinel_tokens = mock.Mock(return_value={"authorize_continue": '{"token":"ok"}'})
+
+        with mock.patch.object(runtime_engine, "build_mailbox_service", return_value=mailbox_service):
+            with mock.patch.object(ncs_register_legacy, "ChatGPTRegister", return_value=mock.Mock(tag="")):
+                with mock.patch.dict(sys.modules, {
+                    "protocol_keygen": fake_protocol_keygen,
+                    "sentinel_browser": fake_sentinel_browser,
+                }):
+                    with mock.patch("ncs_register_legacy._save_codex_tokens"):
+                        with mock.patch("ncs_runtime.engine.time.sleep", return_value=None):
+                            engine = runtime_engine.RegistrationEngine(idx=1, total=1, proxy=None, output_file="out.txt")
+                            with mock.patch.object(engine, "_append_result"):
+                                result = engine.run()
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.oauth_ok)
+        self.assertEqual(oauth_mock.call_count, 2)
+        fake_protocol_keygen.save_tokens.assert_called_once()
+
         mailbox_service = mock.Mock()
         mailbox_service.create_mailbox.return_value = ncs_register.MailboxSession(
             email="duck@example.com",

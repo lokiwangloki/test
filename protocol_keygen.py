@@ -97,20 +97,6 @@ RK_FILE = _config.get("rk_file", "rk.txt")
 # 并发文件写入锁（多线程共享文件时防止数据竞争）
 _file_lock = threading.Lock()
 
-# 代理端口轮询分配（7901-7910 固定 IP）
-_PROXY_PORTS = _config.get("proxy_ports", list(range(7901, 7911)))
-_PROXY_BASE = _config.get("proxy_base", "http://172.17.0.1")
-_proxy_counter = 0
-_proxy_lock = threading.Lock()
-
-def _next_proxy_url():
-    """线程安全的轮询分配 proxy_url（7901→7902→...→7910→7901→...）"""
-    global _proxy_counter
-    with _proxy_lock:
-        port = _PROXY_PORTS[_proxy_counter % len(_PROXY_PORTS)]
-        _proxy_counter += 1
-    return f"{_PROXY_BASE}:{port}"
-
 # OpenAI 认证域名
 OPENAI_AUTH_BASE = "https://auth.openai.com"
 
@@ -2838,9 +2824,6 @@ def save_token_json(email, access_token, refresh_token=None, id_token=None):
         now = datetime.now(tz=timezone(timedelta(hours=8)))
         last_refresh_str = now.strftime("%Y-%m-%dT%H:%M:%S+08:00")
 
-        # 自动分配固定代理 IP（轮询 7901-7910）
-        proxy_url = _next_proxy_url()
-
         token_data = {
             "type": "codex",
             "email": email,
@@ -2850,9 +2833,7 @@ def save_token_json(email, access_token, refresh_token=None, id_token=None):
             "access_token": access_token,
             "last_refresh": last_refresh_str,
             "refresh_token": refresh_token or "",
-            "proxy_url": proxy_url,
         }
-        print(f"  🌐 分配代理: {proxy_url}")
 
         filename = f"{email}.json"
         with open(filename, "w", encoding="utf-8") as f:

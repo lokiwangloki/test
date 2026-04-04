@@ -71,6 +71,67 @@ def take_duck_address(address_file: str | None = None) -> str:
         return chosen
 
 
+def ensure_duck_address_available(
+    address_file: str | None = None,
+    *,
+    refill_attempts: int = 3,
+    stop_count: int = 1,
+    delay_seconds: float = 0,
+) -> str:
+    with _POOL_LOCK:
+        addresses = load_duck_addresses(address_file)
+        if addresses:
+            chosen = addresses[0]
+            _write_duck_addresses(addresses[1:], address_file)
+            return chosen
+
+    last_error: Exception | None = None
+    attempts = max(1, int(refill_attempts or 1))
+    for attempt in range(1, attempts + 1):
+        try:
+            added = fetch_duck_addresses(
+                output_file=address_file,
+                stop_count=stop_count,
+                delay_seconds=delay_seconds,
+            )
+        except Exception as exc:
+            last_error = exc
+            added = []
+        if added:
+            with _POOL_LOCK:
+                addresses = load_duck_addresses(address_file)
+                if addresses:
+                    chosen = addresses[0]
+                    _write_duck_addresses(addresses[1:], address_file)
+                    return chosen
+        if attempt < attempts:
+            print(f"[duckmail] 地址池为空，第 {attempt}/{attempts} 次补充失败，重试中...")
+
+    if last_error is not None:
+        raise RuntimeError(f"duckaddress.txt 中没有可用的 duck 邮箱（已重试 {attempts} 次）") from last_error
+    raise RuntimeError(f"duckaddress.txt 中没有可用的 duck 邮箱（已重试 {attempts} 次）")
+
+
+def remove_duck_addresses(addresses: list[str] | tuple[str, ...] | set[str], address_file: str | None = None) -> int:
+    normalized = {
+        str(item or "").strip().lower()
+        for item in addresses
+        if str(item or "").strip()
+    }
+    if not normalized:
+        return 0
+
+    with _POOL_LOCK:
+        existing = load_duck_addresses(address_file)
+        if not existing:
+            return 0
+        filtered = [item for item in existing if item.strip().lower() not in normalized]
+        removed = len(existing) - len(filtered)
+        if removed > 0:
+            _write_duck_addresses(filtered, address_file)
+        return removed
+
+
 def _duck_headers(bearer: str) -> dict[str, str]:
     return {
         "Accept": "*/*",

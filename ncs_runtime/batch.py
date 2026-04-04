@@ -12,6 +12,7 @@ from .engine import RegistrationEngine, _extract_stage_failure_reason
 
 _MAX_CONSECUTIVE_FAILURES = 30
 _CPA_UPLOAD_RESULT_RE = re.compile(r"上传完成:\s*成功\s*(\d+)\s*个,\s*失败\s*(\d+)\s*个")
+_DUCK_POOL_EMPTY_MARKER = "duck 邮箱地址池不可用"
 
 
 def _cfmail_active_domain_target() -> int:
@@ -87,6 +88,10 @@ def _run_cpa_upload_with_compact_log() -> tuple[int, int, str]:
     reason = _extract_stage_failure_reason(output, "未找到可上传 token")
     print(f"[CPA上传] ❌上传失败: {reason}")
     return 0, 0, reason
+
+
+def _is_duck_pool_exhausted(error_message: str) -> bool:
+    return _DUCK_POOL_EMPTY_MARKER in str(error_message or "")
 
 
 def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.txt",
@@ -280,6 +285,12 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                             since_last_upload = 0
                     else:
                         fail_count += 1
+                        if _is_duck_pool_exhausted(err):
+                            pending_indexes.clear()
+                            for pending_future in list(active_futures.keys()):
+                                pending_future.cancel()
+                            with legacy._print_lock:
+                                print("[duckmail] 地址池补充重试 3 次后仍为空，提前结束本轮任务")
                         del error_code
                         _record_failure_and_maybe_rotate()
                 except Exception as error:
