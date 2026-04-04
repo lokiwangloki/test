@@ -94,23 +94,6 @@ CSV_FILE = _config.get("csv_file", "registered_accounts.csv")
 AK_FILE = _config.get("ak_file", "ak.txt")
 RK_FILE = _config.get("rk_file", "rk.txt")
 
-# 并发文件写入锁（多线程共享文件时防止数据竞争）
-_file_lock = threading.Lock()
-
-# 代理端口轮询分配（7901-7910 固定 IP）
-_PROXY_PORTS = _config.get("proxy_ports", list(range(7901, 7911)))
-_PROXY_BASE = _config.get("proxy_base", "http://172.17.0.1")
-_proxy_counter = 0
-_proxy_lock = threading.Lock()
-
-def _next_proxy_url():
-    """线程安全的轮询分配 proxy_url（7901→7902→...→7910→7901→...）"""
-    global _proxy_counter
-    with _proxy_lock:
-        port = _PROXY_PORTS[_proxy_counter % len(_PROXY_PORTS)]
-        _proxy_counter += 1
-    return f"{_PROXY_BASE}:{port}"
-
 # OpenAI 认证域名
 OPENAI_AUTH_BASE = "https://auth.openai.com"
 
@@ -1823,12 +1806,9 @@ def perform_codex_oauth_login_http(
     provider="",
 ):
     """
-    浏览器辅助协议方式执行 Codex OAuth 登录获取 Token。
+    纯 HTTP 方式执行 Codex OAuth 登录获取 Token（零浏览器）。
 
-    流程：
-      1. 先尝试复用注册会话直接拿 token / authorization code
-      2. 如失败，fresh login 阶段使用 Playwright 预生成 sentinel token
-         且在 login_session 缺失时用浏览器兜底拉起 OAuth 会话
+    已验证的纯 HTTP OAuth 流程（4~5 步）：
       步骤1: GET  /oauth/authorize       → 获取 login_session cookie
       步骤2: POST /api/accounts/authorize/continue  → 提交邮箱
       步骤3: POST /api/accounts/password/verify      → 提交密码
@@ -1848,7 +1828,13 @@ def perform_codex_oauth_login_http(
     print("\n🔐 执行 Codex OAuth 登录（纯 HTTP 模式）...")
     if provider:
         print(f"  邮箱提供商: {provider}")
+
+    session = create_session()
     device_id = generate_device_id()
+
+    # 在 session 中设置 oai-did cookie（两种 domain 格式兼容）
+    session.cookies.set("oai-did", device_id, domain=".auth.openai.com")
+    session.cookies.set("oai-did", device_id, domain="auth.openai.com")
 
     # 生成 PKCE 参数和 state
     code_verifier, code_challenge = generate_pkce()
@@ -1865,56 +1851,50 @@ def perform_codex_oauth_login_http(
     }
     authorize_url = f"{OAUTH_ISSUER}/oauth/authorize?{urlencode(authorize_params)}"
 
-    tokens = _try_registrar_session_oauth(email, registrar_session, authorize_url, code_verifier)
-    if tokens:
-        return tokens
+    # ===== 步骤1: GET /oauth/authorize（带 403 重试） =====
+    max_retries = 3
+    for attempt in range(max_retries + 1):
+        try:
+            # 每次重试前加随机延迟，降低并发压力
+            if attempt > 0:
+                backoff = 3 * (2 ** (attempt - 1)) + random.uniform(1, 3)
+                print(f"  ⏳ 第{attempt}次重试，等待 {backoff:.1f}s...")
+                time.sleep(backoff)
+                # 换一个新的 Chrome 指纹
+                imp, _major, _full, ua, sec_ch_ua = _random_chrome_version()
+                session = create_session(impersonate=imp)
+                if PROXY:
+                    session.proxies = {"http": PROXY, "https": PROXY}
+                session.cookies.set("oai-did", device_id, domain=".auth.openai.com")
+                session.cookies.set("oai-did", device_id, domain="auth.openai.com")
 
-    session = create_session()
-    browser_tokens = _load_oauth_browser_tokens(proxy=PROXY if PROXY else None)
+            resp = session.get(
+                authorize_url,
+                headers=NAVIGATE_HEADERS,
+                allow_redirects=True,
+                verify=False,
+                timeout=30,
+            )
+            print(f"  状态码: {resp.status_code}")
+            print(f"  最终URL: {resp.url[:120]}")
 
-    # 在 session 中设置 oai-did cookie（两种 domain 格式兼容）
-    session.cookies.set("oai-did", device_id, domain=".auth.openai.com")
-    session.cookies.set("oai-did", device_id, domain="auth.openai.com")
-
-    # ===== 步骤1: GET /oauth/authorize → 优先同注册风格的请求头，必要时浏览器兜底 =====
-    try:
-        resp = session.get(
-            authorize_url,
-            headers=NAVIGATE_HEADERS,
-            allow_redirects=True,
-            verify=False,
-            timeout=30,
-        )
-        print(f"  状态码: {resp.status_code}")
-        print(f"  最终URL: {resp.url[:120]}")
-    except Exception as e:
-        print(f"  ❌ OAuth 授权请求失败: {e}")
-        return None
+            if resp.status_code == 403:
+                print(f"  ⚠️ Cloudflare 403 拦截")
+                if attempt < max_retries:
+                    continue  # 重试
+                else:
+                    print("  ❌ 重试次数耗尽，OAuth 授权失败")
+                    return None
+            break  # 非 403，跳出重试循环
+        except Exception as e:
+            print(f"  ❌ OAuth 授权请求失败: {e}")
+            if attempt < max_retries:
+                continue
+            return None
 
     has_login_session = "login_session" in session.cookies
     if not has_login_session:
-        print("  ⚠️ 未获得 login_session，尝试浏览器兜底...")
-        if resp.status_code >= 400:
-            print(f"  OAuth 授权响应: HTTP {resp.status_code}")
-        print(f"  响应预览: {resp.text[:300]}")
-        browser_bootstrap = _bootstrap_login_session_via_browser(
-            session,
-            authorize_url,
-            user_agent=COMMON_HEADERS.get("user-agent", "") or USER_AGENT,
-            proxy=PROXY if PROXY else "",
-            timeout_ms=45000,
-        )
-        if browser_bootstrap.get("success"):
-            final_url = str(browser_bootstrap.get("final_url") or "").strip()
-            cookie_count = int(browser_bootstrap.get("cookie_count") or 0)
-            print(
-                "  浏览器兜底: ✅ 已获取 login_session"
-                f" (cookies={cookie_count}, final_url={final_url or '-'})"
-            )
-        else:
-            detail = str(browser_bootstrap.get("error") or "未知错误").strip() or "未知错误"
-            print(f"  浏览器兜底失败: {detail}")
-            return None
+        print("  ⚠️ 未获得 login_session")
 
     # ===== 步骤2: POST authorize/continue =====
 
@@ -1925,9 +1905,9 @@ def perform_codex_oauth_login_http(
     headers.update(generate_datadog_trace())
 
     # 获取 authorize_continue 的 sentinel token
-    sentinel_email = str((browser_tokens or {}).get("authorize_continue") or "").strip()
+    sentinel_email = build_sentinel_token(session, device_id, flow="authorize_continue")
     if not sentinel_email:
-        print("  ❌ OAuth 浏览器 sentinel token 缺失: authorize_continue")
+        print("  ❌ 无法获取 authorize_continue 的 sentinel token")
         return None
     headers["openai-sentinel-token"] = sentinel_email
 
@@ -1960,9 +1940,9 @@ def perform_codex_oauth_login_http(
     headers.update(generate_datadog_trace())
 
     # 获取 password_verify 的 sentinel token（每个 flow 需要独立的 token）
-    sentinel_pwd = str((browser_tokens or {}).get("password_verify") or "").strip()
+    sentinel_pwd = build_sentinel_token(session, device_id, flow="password_verify")
     if not sentinel_pwd:
-        print("  ❌ OAuth 浏览器 sentinel token 缺失: password_verify")
+        print("  ❌ 无法获取 password_verify 的 sentinel token")
         return None
     headers["openai-sentinel-token"] = sentinel_pwd
 
@@ -2020,6 +2000,7 @@ def perform_codex_oauth_login_http(
         # 服务端已经自动发送了 OTP 邮件！立即开始轮询检查。
         # (旧邮件 IDs 已经在提交 password/verify 前记录完毕)
 
+        # 轮询等待新邮件到达
         print(f"  ⏳ 开始监视邮箱（跳过 {len(old_mail_ids)} 封旧邮件）...")
         code = None
         tried_codes = set()  # 已尝试过的验证码，避免重复提交
@@ -2064,11 +2045,9 @@ def perform_codex_oauth_login_http(
                 tried_codes.add(try_code)
                 print(f"  🔢 尝试验证码: {try_code}")
                 # 每次提交 OTP 前获取新的 sentinel token
-                otp_sentinel = str((browser_tokens or {}).get("email_otp_validate") or "").strip()
-                if not otp_sentinel:
-                    print("  ❌ OAuth 浏览器 sentinel token 缺失: email_otp_validate")
-                    return None
-                h_val["openai-sentinel-token"] = otp_sentinel
+                otp_sentinel = build_sentinel_token(session, device_id, flow="email_otp_validate")
+                if otp_sentinel:
+                    h_val["openai-sentinel-token"] = otp_sentinel
                 resp = session.post(
                     f"{OAUTH_ISSUER}/api/accounts/email-otp/validate",
                     json={"code": try_code},
@@ -2116,7 +2095,6 @@ def perform_codex_oauth_login_http(
                 print(f"  ✅ 已跳转到 consent: {continue_url}")
             else:
                 # 尝试 POST create_account
-                import random
                 first_names = ["James", "Mary", "John", "Linda", "Robert", "Sarah"]
                 last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Wilson"]
                 name = f"{random.choice(first_names)} {random.choice(last_names)}"
@@ -2130,11 +2108,9 @@ def perform_codex_oauth_login_http(
                 h_create["oai-device-id"] = device_id
                 h_create.update(generate_datadog_trace())
                 # create_account 也需要 sentinel PoW token
-                ca_sentinel = str((browser_tokens or {}).get("oauth_create_account") or "").strip()
-                if not ca_sentinel:
-                    print("  ❌ OAuth 浏览器 sentinel token 缺失: oauth_create_account")
-                    return None
-                h_create["openai-sentinel-token"] = ca_sentinel
+                ca_sentinel = build_sentinel_token(session, device_id, flow="oauth_create_account")
+                if ca_sentinel:
+                    h_create["openai-sentinel-token"] = ca_sentinel
                 resp_create = session.post(
                     f"{OAUTH_ISSUER}/api/accounts/create_account",
                     json={"name": name, "birthdate": birthdate},
@@ -2873,9 +2849,6 @@ def save_token_json(email, access_token, refresh_token=None, id_token=None):
         now = datetime.now(tz=timezone(timedelta(hours=8)))
         last_refresh_str = now.strftime("%Y-%m-%dT%H:%M:%S+08:00")
 
-        # 自动分配固定代理 IP（轮询 7901-7910）
-        proxy_url = _next_proxy_url()
-
         token_data = {
             "type": "codex",
             "email": email,
@@ -2885,9 +2858,7 @@ def save_token_json(email, access_token, refresh_token=None, id_token=None):
             "access_token": access_token,
             "last_refresh": last_refresh_str,
             "refresh_token": refresh_token or "",
-            "proxy_url": proxy_url,
         }
-        print(f"  🌐 分配代理: {proxy_url}")
 
         filename = f"{email}.json"
         with open(filename, "w", encoding="utf-8") as f:
