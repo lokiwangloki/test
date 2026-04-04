@@ -350,6 +350,32 @@ class ProxyNormalizationTests(unittest.TestCase):
     def test_auto_scheduler_uploads_each_success_immediately_by_default(self):
         self.assertEqual(auto_scheduler.AUTO_PARAMS["cpa_upload_every_n"], 1)
 
+    def test_save_tokens_uses_module_file_lock(self):
+        fake_lock = mock.MagicMock()
+        fake_lock.__enter__.return_value = None
+        fake_lock.__exit__.return_value = False
+
+        with mock.patch.object(protocol_keygen, "_file_lock", fake_lock):
+            with mock.patch("builtins.open", mock.mock_open()):
+                with mock.patch("protocol_keygen.save_token_json") as save_json_mock:
+                    protocol_keygen.save_tokens(
+                        "user@example.com",
+                        {
+                            "access_token": "access-123",
+                            "refresh_token": "refresh-123",
+                            "id_token": "id-123",
+                        },
+                    )
+
+        fake_lock.__enter__.assert_called_once()
+        fake_lock.__exit__.assert_called_once()
+        save_json_mock.assert_called_once_with(
+            "user@example.com",
+            "access-123",
+            "refresh-123",
+            "id-123",
+        )
+
     def test_run_once_registers_only_missing_gap(self):
         cfg = {"upload_api_url": "", "upload_api_token": ""}
         with mock.patch("auto_scheduler._load_account_count_config", return_value=cfg):

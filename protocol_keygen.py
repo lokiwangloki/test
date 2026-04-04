@@ -94,6 +94,9 @@ CSV_FILE = _config.get("csv_file", "registered_accounts.csv")
 AK_FILE = _config.get("ak_file", "ak.txt")
 RK_FILE = _config.get("rk_file", "rk.txt")
 
+# 并发文件写入锁（多线程共享文件时防止数据竞争）
+_file_lock = threading.Lock()
+
 # OpenAI 认证域名
 OPENAI_AUTH_BASE = "https://auth.openai.com"
 
