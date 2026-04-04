@@ -1786,7 +1786,14 @@ def build_sentinel_token(session, device_id, flow="authorize_continue"):
     return sentinel_token
 
 
-def perform_codex_oauth_login_http(email, password, registrar_session=None, cf_token=None):
+def perform_codex_oauth_login_http(
+    email,
+    password,
+    registrar_session=None,
+    cf_token=None,
+    otp_fetcher=None,
+    provider="",
+):
     """
     纯 HTTP 方式执行 Codex OAuth 登录获取 Token（零浏览器）。
 
@@ -1802,10 +1809,14 @@ def perform_codex_oauth_login_http(email, password, registrar_session=None, cf_t
         password: 登录密码
         registrar_session: 注册时的 session（可选，本模式未使用）
         cf_token: 邮箱 JWT token（用于接收 OTP 验证码，新注册账号首次登录时需要）
+        otp_fetcher: provider 侧验证码拉取器（duckmail/qq imap 等场景优先使用）
+        provider: 邮箱提供商，仅用于日志诊断
     返回:
         dict: tokens 字典（含 access_token/refresh_token/id_token），失败返回 None
     """
     print("\n🔐 执行 Codex OAuth 登录（纯 HTTP 模式）...")
+    if provider:
+        print(f"  邮箱提供商: {provider}")
 
     session = create_session()
     device_id = generate_device_id()
@@ -1926,9 +1937,10 @@ def perform_codex_oauth_login_http(email, password, registrar_session=None, cf_t
 
     # 关键修复：在提交密码（触发自动发邮件）前，提前记录旧邮件列表
     # 否则若发件太快，新验证码会在收集 old_mail_ids 时被当作旧邮件跳过
-    mail_session = create_session()
+    mail_session = None
     old_mail_ids = set()
-    if cf_token:
+    if otp_fetcher is None and cf_token:
+        mail_session = create_session()
         initial_emails = fetch_emails(mail_session, email, cf_token)
         if initial_emails:
             for e_item in initial_emails:
@@ -1969,8 +1981,8 @@ def perform_codex_oauth_login_http(email, password, registrar_session=None, cf_t
     if page_type == "email_otp_verification" or "email-verification" in continue_url:
         print("\n  --- [步骤3.5] 邮箱验证（新注册账号首次登录） ---")
 
-        if not cf_token:
-            print("  ❌ 无 cf_token，无法接收验证码")
+        if otp_fetcher is None and not cf_token:
+            print("  ❌ 无可用验证码拉取方式")
             return None
 
         # 关键认知：当 password/verify 返回 email_otp_verification 时，
@@ -1989,28 +2001,36 @@ def perform_codex_oauth_login_http(email, password, registrar_session=None, cf_t
         h_val.update(generate_datadog_trace())
 
         while time.time() - start_time < 300:
-            all_emails = fetch_emails(mail_session, email, cf_token)
-            if not all_emails:
-                time.sleep(2)
-                continue
+            candidate_codes = []
 
-            # 只从新邮件（ID 不在旧列表中的）提取验证码
-            new_codes = []
-            for e_item in all_emails:
-                if isinstance(e_item, dict):
+            if otp_fetcher is not None:
+                remaining = max(1, int(300 - (time.time() - start_time)))
+                fetched_code = otp_fetcher(remaining)
+                if fetched_code and fetched_code not in tried_codes:
+                    candidate_codes.append(fetched_code)
+            elif mail_session is not None:
+                all_emails = fetch_emails(mail_session, email, cf_token)
+                if not all_emails:
+                    time.sleep(2)
+                    continue
+
+                # 只从新邮件（ID 不在旧列表中的）提取验证码
+                for e_item in all_emails:
+                    if not isinstance(e_item, dict):
+                        continue
                     mail_id = e_item.get("id")
                     if mail_id in old_mail_ids:
                         continue  # 跳过旧邮件
                     c = extract_verification_code(e_item.get("raw", ""))
                     if c and c not in tried_codes:
-                        new_codes.append(c)
+                        candidate_codes.append(c)
 
-            if not new_codes:
+            if not candidate_codes:
                 time.sleep(2)
                 continue
 
             # 依次尝试每个未试过的验证码
-            for try_code in new_codes:
+            for try_code in candidate_codes:
                 tried_codes.add(try_code)
                 print(f"  🔢 尝试验证码: {try_code}")
                 # 每次提交 OTP 前获取新的 sentinel token

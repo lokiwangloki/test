@@ -273,6 +273,8 @@ class RegistrationEngine:
                             mailbox.email, chatgpt_password,
                             registrar_session=registrar.session,
                             cf_token=mailbox.token,
+                            otp_fetcher=otp_fetcher,
+                            provider=effective_provider,
                         )
                     oauth_ok = bool(tokens and tokens.get("access_token"))
                 except Exception as error:
