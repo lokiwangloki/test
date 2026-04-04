@@ -2102,19 +2102,23 @@ def perform_codex_oauth_login_http(
         print(f"  ⏳ 开始监视邮箱（跳过 {len(old_mail_ids)} 封旧邮件）...")
         code = None
         tried_codes = set()  # 已尝试过的验证码，避免重复提交
-        start_time = time.time()
+        otp_wait_started_at = time.time()
+        first_deadline = otp_wait_started_at + 40
+        hard_deadline = otp_wait_started_at + 80
+        current_window_deadline = first_deadline
+        resent_after_failure = False
 
         h_val = dict(COMMON_HEADERS)
         h_val["referer"] = f"{OAUTH_ISSUER}/email-verification"
         h_val["oai-device-id"] = device_id
         h_val.update(generate_datadog_trace())
 
-        while time.time() - start_time < 300:
+        while time.time() < hard_deadline:
             candidate_codes = []
 
+            remaining_window = max(1, int(current_window_deadline - time.time()))
             if otp_fetcher is not None:
-                remaining = max(1, int(300 - (time.time() - start_time)))
-                fetched_code = otp_fetcher(remaining)
+                fetched_code = otp_fetcher(remaining_window)
                 if fetched_code and fetched_code not in tried_codes:
                     candidate_codes.append(fetched_code)
             elif mail_session is not None:
@@ -2135,6 +2139,29 @@ def perform_codex_oauth_login_http(
                         candidate_codes.append(c)
 
             if not candidate_codes:
+                if not resent_after_failure and time.time() >= first_deadline:
+                    print("  ⚠️ OAuth OTP 首轮等待 40s 未成功，显式重发验证码...")
+                    resend_headers = dict(NAVIGATE_HEADERS)
+                    resend_headers["referer"] = f"{OAUTH_ISSUER}/log-in/password"
+                    resend_resp = session.get(
+                        f"{OAUTH_ISSUER}/api/accounts/email-otp/send",
+                        headers=resend_headers,
+                        verify=False,
+                        timeout=30,
+                        allow_redirects=True,
+                    )
+                    print(f"  resend send 状态码: {resend_resp.status_code}")
+                    verify_resp = session.get(
+                        f"{OAUTH_ISSUER}/email-verification",
+                        headers=resend_headers,
+                        verify=False,
+                        timeout=30,
+                        allow_redirects=True,
+                    )
+                    print(f"  resend email-verification 状态码: {verify_resp.status_code}")
+                    print("  ✅ OAuth OTP 已重发，继续等待 40s")
+                    resent_after_failure = True
+                    current_window_deadline = hard_deadline
                 time.sleep(2)
                 continue
 
@@ -2165,13 +2192,36 @@ def perform_codex_oauth_login_http(
                     break
                 else:
                     print(f"  ❌ 验证码 {try_code} 失败: {resp.status_code}")
+                    if not resent_after_failure:
+                        print("  ⚠️ OAuth OTP 校验失败，显式重发验证码...")
+                        resend_headers = dict(NAVIGATE_HEADERS)
+                        resend_headers["referer"] = f"{OAUTH_ISSUER}/log-in/password"
+                        resend_resp = session.get(
+                            f"{OAUTH_ISSUER}/api/accounts/email-otp/send",
+                            headers=resend_headers,
+                            verify=False,
+                            timeout=30,
+                            allow_redirects=True,
+                        )
+                        print(f"  resend send 状态码: {resend_resp.status_code}")
+                        verify_resp = session.get(
+                            f"{OAUTH_ISSUER}/email-verification",
+                            headers=resend_headers,
+                            verify=False,
+                            timeout=30,
+                            allow_redirects=True,
+                        )
+                        print(f"  resend email-verification 状态码: {verify_resp.status_code}")
+                        print("  ✅ OAuth OTP 已重发，继续等待剩余 40s")
+                        resent_after_failure = True
+                        current_window_deadline = hard_deadline
 
             if code:
                 break
             time.sleep(2)
 
         if not code:
-            print("  ❌ 验证码等待超时")
+            print("  ❌ OAuth OTP 80s 内未验证成功")
             return None
 
         # 如果验证后进入 about-you（填写姓名生日），需要处理

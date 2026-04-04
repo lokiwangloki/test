@@ -1705,7 +1705,139 @@ class ProxyNormalizationTests(unittest.TestCase):
             '{"flow":"email_otp_validate","c":"http-otp"}',
         )
 
-    def test_perform_codex_oauth_login_http_rescues_soft_add_phone(self):
+    def test_perform_codex_oauth_login_http_resends_otp_after_400_and_keeps_80s_budget(self):
+        class FakeCookies(dict):
+            def __init__(self):
+                super().__init__()
+                self.jar = []
+
+            def set(self, name, value, domain=""):
+                del domain
+                self[name] = value
+
+        class FakeResponse:
+            def __init__(self, status_code, *, headers=None, url="", text="", json_data=None):
+                self.status_code = status_code
+                self.headers = headers or {}
+                self.url = url
+                self.text = text
+                self._json_data = json_data
+                self.history = []
+
+            def json(self):
+                if self._json_data is None:
+                    raise ValueError("no json")
+                return self._json_data
+
+        class FakeSession:
+            def __init__(self):
+                self.cookies = FakeCookies()
+                self.calls = []
+                self.validate_calls = 0
+
+            def get(self, url, **kwargs):
+                snapshot = dict(kwargs)
+                if isinstance(snapshot.get("headers"), dict):
+                    snapshot["headers"] = dict(snapshot["headers"])
+                self.calls.append(("GET", url, snapshot))
+                if url.startswith("https://auth.openai.com/oauth/authorize"):
+                    self.cookies["login_session"] = "login-cookie"
+                    return FakeResponse(200, url="https://auth.openai.com/log-in", text="<html></html>")
+                if url == "https://auth.openai.com/sign-in-with-chatgpt/codex/consent":
+                    return FakeResponse(
+                        302,
+                        url=url,
+                        headers={
+                            "Location": "http://localhost:1455/auth/callback?code=code-otp&state=state-123",
+                        },
+                    )
+                if url == "https://auth.openai.com/api/accounts/email-otp/send":
+                    return FakeResponse(200, url=url, text="{}")
+                if url == "https://auth.openai.com/email-verification":
+                    return FakeResponse(200, url=url, text="<html>email verification</html>")
+                raise AssertionError(f"unexpected GET: {url}")
+
+            def post(self, url, **kwargs):
+                snapshot = dict(kwargs)
+                if isinstance(snapshot.get("headers"), dict):
+                    snapshot["headers"] = dict(snapshot["headers"])
+                self.calls.append(("POST", url, snapshot))
+                if url == "https://auth.openai.com/api/accounts/authorize/continue":
+                    return FakeResponse(
+                        200,
+                        url=url,
+                        json_data={"continue_url": "/log-in/password", "page": {"type": "password"}},
+                    )
+                if url == "https://auth.openai.com/api/accounts/password/verify":
+                    return FakeResponse(
+                        200,
+                        url=url,
+                        json_data={
+                            "continue_url": "/email-verification",
+                            "page": {"type": "email_otp_verification"},
+                        },
+                    )
+                if url == "https://auth.openai.com/api/accounts/email-otp/validate":
+                    self.validate_calls += 1
+                    if self.validate_calls == 1:
+                        return FakeResponse(400, url=url, text="bad otp")
+                    return FakeResponse(
+                        200,
+                        url=url,
+                        json_data={
+                            "continue_url": "/sign-in-with-chatgpt/codex/consent",
+                            "page": {"type": "consent"},
+                        },
+                    )
+                raise AssertionError(f"unexpected POST: {url}")
+
+        fake_session = FakeSession()
+        registrar_session = mock.Mock()
+        otp_fetcher = mock.Mock(side_effect=["111111", "222222"])
+
+        clock = {"now": 1000.0}
+
+        def fake_time():
+            return clock["now"]
+
+        def fake_sleep(seconds):
+            clock["now"] += seconds
+
+        with mock.patch("protocol_keygen.generate_pkce", return_value=("verifier-123", "challenge-123")):
+            with mock.patch("protocol_keygen.secrets.token_urlsafe", return_value="state-123"):
+                with mock.patch("protocol_keygen.create_session", return_value=fake_session):
+                    with mock.patch("protocol_keygen.time.time", side_effect=fake_time):
+                        with mock.patch("protocol_keygen.time.sleep", side_effect=fake_sleep):
+                            with mock.patch(
+                                "protocol_keygen.build_sentinel_token",
+                                side_effect=[
+                                    '{"flow":"authorize_continue","c":"http-ac"}',
+                                    '{"flow":"password_verify","c":"http-pwd"}',
+                                    '{"flow":"email_otp_validate","c":"http-otp-1"}',
+                                    '{"flow":"email_otp_validate","c":"http-otp-2"}',
+                                ],
+                            ):
+                                with mock.patch("protocol_keygen.codex_exchange_code", return_value={"access_token": "token-otp"}) as exchange_mock:
+                                    tokens = protocol_keygen.perform_codex_oauth_login_http(
+                                        "user@example.com",
+                                        "Password-1!",
+                                        registrar_session=registrar_session,
+                                        cf_token="mail-token",
+                                        otp_fetcher=otp_fetcher,
+                                        provider="cfmail",
+                                    )
+
+        self.assertEqual(tokens, {"access_token": "token-otp"})
+        self.assertEqual(otp_fetcher.call_args_list[0], mock.call(40))
+        self.assertGreaterEqual(otp_fetcher.call_args_list[1].args[0], 40)
+        self.assertLessEqual(otp_fetcher.call_args_list[1].args[0], 80)
+        resend_calls = [
+            call for call in fake_session.calls
+            if call[0] == "GET" and call[1] == "https://auth.openai.com/api/accounts/email-otp/send"
+        ]
+        self.assertEqual(len(resend_calls), 1)
+        exchange_mock.assert_called_once_with("code-otp", "verifier-123")
+
         class FakeCookies(dict):
             def __init__(self):
                 super().__init__()
