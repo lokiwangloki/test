@@ -2453,8 +2453,8 @@ class ProxyNormalizationTests(unittest.TestCase):
     def test_load_config_supports_batch_runtime_defaults(self):
         fake_config = {
             "batch_mode": "pipeline",
-            "task_launch_interval_min_seconds": 2,
-            "task_launch_interval_max_seconds": 5,
+            "task_launch_interval_min_seconds": 5,
+            "task_launch_interval_max_seconds": 10,
         }
         with mock.patch("ncs_register.os.path.exists", return_value=True):
             with mock.patch("builtins.open", mock.mock_open(read_data="{}")):
@@ -2462,8 +2462,8 @@ class ProxyNormalizationTests(unittest.TestCase):
                     config = ncs_register._load_config()
 
         self.assertEqual(config["batch_mode"], "pipeline")
-        self.assertEqual(config["task_launch_interval_min_seconds"], 2)
-        self.assertEqual(config["task_launch_interval_max_seconds"], 5)
+        self.assertEqual(config["task_launch_interval_min_seconds"], 5)
+        self.assertEqual(config["task_launch_interval_max_seconds"], 10)
 
     def test_build_codex_session_tokens_uses_access_token_and_workspace_email_prefix(self):
         fake_now = mock.Mock()
