@@ -759,12 +759,49 @@ def _bootstrap_login_session_via_browser(
         "final_url": "",
         "cookie_count": 0,
         "error": "",
+        "auth_session": None,
+        "browser_tokens": {},
+        "sentinel_artifacts": None,
     }
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:
         result["error"] = f"playwright import failed: {exc}"
         return result
+
+    flows = [
+        "authorize_continue",
+        "username_password_create",
+        "email_otp_validate",
+        "password_verify",
+        "oauth_create_account",
+    ]
+    sentinel_artifacts = None
+    try:
+        from sentinel_browser import get_all_sentinel_artifacts
+    except Exception:
+        get_all_sentinel_artifacts = None
+
+    if get_all_sentinel_artifacts is not None:
+        try:
+            sentinel_artifacts = get_all_sentinel_artifacts(
+                flows=flows,
+                proxy=proxy,
+                timeout_ms=max(timeout_ms, 60000),
+                user_agent=user_agent or USER_AGENT,
+            ) or {}
+        except Exception as exc:
+            result["error"] = f"sentinel bootstrap failed: {exc}"
+
+    browser_tokens = {}
+    if isinstance(sentinel_artifacts, dict):
+        result["sentinel_artifacts"] = sentinel_artifacts
+        for flow in flows:
+            raw_token, _raw_so_token = _extract_browser_flow_payload(sentinel_artifacts, flow)
+            compact_token = _compact_browser_json_string(raw_token)
+            if compact_token:
+                browser_tokens[flow] = compact_token
+    result["browser_tokens"] = browser_tokens
 
     launch_args = {
         "headless": True,
@@ -796,7 +833,18 @@ def _bootstrap_login_session_via_browser(
                 )
             page = context.new_page()
             page.goto(authorize_url, wait_until="domcontentloaded", timeout=timeout_ms)
-            page.wait_for_timeout(3000)
+            try:
+                page.wait_for_function(
+                    "() => document.cookie.includes('login_session=') || location.href.includes('/u/signup') || location.href.includes('/log-in')",
+                    timeout=min(timeout_ms, 15000),
+                )
+            except Exception:
+                pass
+            try:
+                page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 5000))
+            except Exception:
+                pass
+            page.wait_for_timeout(2000)
             result["final_url"] = str(page.url or "").strip()
 
             cookie_count = 0
@@ -809,9 +857,10 @@ def _bootstrap_login_session_via_browser(
                 session_obj.cookies.set(name, value, domain=domain)
                 cookie_count += 1
             result["cookie_count"] = cookie_count
+            result["auth_session"] = _decode_oauth_session_cookie(session_obj)
             result["success"] = bool(_get_session_cookie_value(session_obj, "login_session"))
             if not result["success"]:
-                result["error"] = "login_session missing after browser bootstrap"
+                result["error"] = result["error"] or "login_session missing after browser bootstrap"
         except Exception as exc:
             result["error"] = str(exc)
         finally:
@@ -848,6 +897,32 @@ def _load_oauth_browser_tokens(flows=None, proxy=None, timeout_ms=60000):
         flow: (tokens.get(flow) if isinstance(tokens, dict) else None)
         for flow in normalized_flows
     }
+
+
+def _compact_browser_json_string(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _extract_browser_flow_payload(result, flow):
+    if not isinstance(result, dict):
+        return None, None
+
+    flows_payload = result.get("flows")
+    if isinstance(flows_payload, dict):
+        flow_payload = flows_payload.get(flow)
+        if isinstance(flow_payload, dict):
+            return flow_payload.get("token"), flow_payload.get("soToken")
+        return flow_payload, None
+
+    flow_payload = result.get(flow)
+    if isinstance(flow_payload, dict) and ("token" in flow_payload or "soToken" in flow_payload):
+        return flow_payload.get("token"), flow_payload.get("soToken")
+    return flow_payload, None
 
 
 def _decode_oauth_session_cookie(session_obj):
@@ -1275,6 +1350,7 @@ class ProtocolRegistrar:
 
         # ===== 步骤0a: GET /oauth/authorize → 获取 login_session cookie =====
         print("\n  --- [步骤0a] GET /oauth/authorize ---")
+        resp = None
         try:
             resp = self.session.get(
                 authorize_url,
@@ -1292,11 +1368,33 @@ class ProtocolRegistrar:
         has_login_session = "login_session" in self.session.cookies
         print(f"  login_session: {'✅ 已获取' if has_login_session else '❌ 未获取'}")
         if not has_login_session:
-            print("  ⚠️ 未获得 login_session cookie，尝试浏览器兜底...")
-            if resp.status_code >= 400:
+            oauth2_url = f"{OPENAI_AUTH_BASE}/api/oauth/oauth2/auth"
+            print("  ⚠️ 未获得 login_session cookie，尝试 /api/oauth/oauth2/auth ...")
+            try:
+                resp_oauth2 = self.session.get(
+                    oauth2_url,
+                    headers={
+                        **NAVIGATE_HEADERS,
+                        "referer": authorize_url,
+                    },
+                    params=authorize_params,
+                    allow_redirects=True,
+                    verify=False,
+                    timeout=30,
+                )
+                print(f"  oauth2/auth: {resp_oauth2.status_code}")
+                has_login_session = "login_session" in self.session.cookies
+                print(f"  oauth2/auth 后 login_session: {'✅ 已获取' if has_login_session else '❌ 未获取'}")
+                if not has_login_session and resp_oauth2.status_code >= 400:
+                    print(f"  oauth2/auth 响应预览: {resp_oauth2.text[:300]}")
+            except Exception as e:
+                print(f"  ⚠️ oauth2/auth 请求失败: {e}")
+
+        if not has_login_session:
+            print("  ⚠️ HTTP 路径仍未获得 login_session，尝试浏览器兜底...")
+            if resp is not None and resp.status_code >= 400:
                 print(f"  OAuth 授权响应: HTTP {resp.status_code}")
-            # 打印响应内容片段用于诊断
-            print(f"  响应预览: {resp.text[:300]}")
+                print(f"  响应预览: {resp.text[:300]}")
             browser_bootstrap = _bootstrap_login_session_via_browser(
                 self.session,
                 authorize_url,
@@ -1304,20 +1402,34 @@ class ProtocolRegistrar:
                 proxy=PROXY if PROXY else "",
                 timeout_ms=45000,
             )
+            final_url = str(browser_bootstrap.get("final_url") or "").strip()
+            cookie_count = int(browser_bootstrap.get("cookie_count") or 0)
             if browser_bootstrap.get("success"):
                 has_login_session = "login_session" in self.session.cookies
-                final_url = str(browser_bootstrap.get("final_url") or "").strip()
-                cookie_count = int(browser_bootstrap.get("cookie_count") or 0)
+                browser_tokens = browser_bootstrap.get("browser_tokens") or {}
+                if isinstance(browser_tokens, dict):
+                    self._browser_tokens.update(
+                        {
+                            flow: token
+                            for flow, token in browser_tokens.items()
+                            if token
+                        }
+                    )
                 print(
                     "  浏览器兜底: ✅ 已获取 login_session"
                     f" (cookies={cookie_count}, final_url={final_url or '-'})"
                 )
             else:
                 detail = str(browser_bootstrap.get("error") or "未知错误").strip() or "未知错误"
-                print(f"  浏览器兜底失败: {detail}")
+                print(
+                    "  浏览器兜底失败:"
+                    f" {detail} (cookies={cookie_count}, final_url={final_url or '-'})"
+                )
                 return False
 
-
+        if not ("login_session" in self.session.cookies):
+            print("  ❌ login_session 仍未获取，终止后续步骤")
+            return False
 
         # ===== 步骤0b: POST /api/accounts/authorize/continue → 提交邮箱 =====
         print("\n  --- [步骤0b] POST /api/accounts/authorize/continue ---")
@@ -1702,7 +1814,14 @@ def build_sentinel_token(session, device_id, flow="authorize_continue"):
     return sentinel_token
 
 
-def perform_codex_oauth_login_http(email, password, registrar_session=None, cf_token=None):
+def perform_codex_oauth_login_http(
+    email,
+    password,
+    registrar_session=None,
+    cf_token=None,
+    otp_fetcher=None,
+    provider="",
+):
     """
     浏览器辅助协议方式执行 Codex OAuth 登录获取 Token。
 
@@ -1721,10 +1840,14 @@ def perform_codex_oauth_login_http(email, password, registrar_session=None, cf_t
         password: 登录密码
         registrar_session: 注册时的 session（可选，本模式未使用）
         cf_token: 邮箱 JWT token（用于接收 OTP 验证码，新注册账号首次登录时需要）
+        otp_fetcher: provider 侧验证码拉取器（duckmail/qq imap 等场景优先使用）
+        provider: 邮箱提供商，仅用于日志诊断
     返回:
         dict: tokens 字典（含 access_token/refresh_token/id_token），失败返回 None
     """
-    print("\n🔐 执行 Codex OAuth 登录（浏览器辅助协议模式）...")
+    print("\n🔐 执行 Codex OAuth 登录（纯 HTTP 模式）...")
+    if provider:
+        print(f"  邮箱提供商: {provider}")
     device_id = generate_device_id()
 
     # 生成 PKCE 参数和 state
@@ -1845,9 +1968,10 @@ def perform_codex_oauth_login_http(email, password, registrar_session=None, cf_t
 
     # 关键修复：在提交密码（触发自动发邮件）前，提前记录旧邮件列表
     # 否则若发件太快，新验证码会在收集 old_mail_ids 时被当作旧邮件跳过
-    mail_session = create_session()
+    mail_session = None
     old_mail_ids = set()
-    if cf_token:
+    if otp_fetcher is None and cf_token:
+        mail_session = create_session()
         initial_emails = fetch_emails(mail_session, email, cf_token)
         if initial_emails:
             for e_item in initial_emails:
@@ -1888,15 +2012,14 @@ def perform_codex_oauth_login_http(email, password, registrar_session=None, cf_t
     if page_type == "email_otp_verification" or "email-verification" in continue_url:
         print("\n  --- [步骤3.5] 邮箱验证（新注册账号首次登录） ---")
 
-        if not cf_token:
-            print("  ❌ 无 cf_token，无法接收验证码")
+        if otp_fetcher is None and not cf_token:
+            print("  ❌ 无可用验证码拉取方式")
             return None
 
         # 关键认知：当 password/verify 返回 email_otp_verification 时，
         # 服务端已经自动发送了 OTP 邮件！立即开始轮询检查。
         # (旧邮件 IDs 已经在提交 password/verify 前记录完毕)
 
-        # 轮询等待新邮件到达
         print(f"  ⏳ 开始监视邮箱（跳过 {len(old_mail_ids)} 封旧邮件）...")
         code = None
         tried_codes = set()  # 已尝试过的验证码，避免重复提交
@@ -1908,28 +2031,36 @@ def perform_codex_oauth_login_http(email, password, registrar_session=None, cf_t
         h_val.update(generate_datadog_trace())
 
         while time.time() - start_time < 300:
-            all_emails = fetch_emails(mail_session, email, cf_token)
-            if not all_emails:
-                time.sleep(2)
-                continue
+            candidate_codes = []
 
-            # 只从新邮件（ID 不在旧列表中的）提取验证码
-            new_codes = []
-            for e_item in all_emails:
-                if isinstance(e_item, dict):
+            if otp_fetcher is not None:
+                remaining = max(1, int(300 - (time.time() - start_time)))
+                fetched_code = otp_fetcher(remaining)
+                if fetched_code and fetched_code not in tried_codes:
+                    candidate_codes.append(fetched_code)
+            elif mail_session is not None:
+                all_emails = fetch_emails(mail_session, email, cf_token)
+                if not all_emails:
+                    time.sleep(2)
+                    continue
+
+                # 只从新邮件（ID 不在旧列表中的）提取验证码
+                for e_item in all_emails:
+                    if not isinstance(e_item, dict):
+                        continue
                     mail_id = e_item.get("id")
                     if mail_id in old_mail_ids:
                         continue  # 跳过旧邮件
                     c = extract_verification_code(e_item.get("raw", ""))
                     if c and c not in tried_codes:
-                        new_codes.append(c)
+                        candidate_codes.append(c)
 
-            if not new_codes:
+            if not candidate_codes:
                 time.sleep(2)
                 continue
 
             # 依次尝试每个未试过的验证码
-            for try_code in new_codes:
+            for try_code in candidate_codes:
                 tried_codes.add(try_code)
                 print(f"  🔢 尝试验证码: {try_code}")
                 # 每次提交 OTP 前获取新的 sentinel token
