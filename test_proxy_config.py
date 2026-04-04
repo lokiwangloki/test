@@ -1660,6 +1660,11 @@ class ProxyNormalizationTests(unittest.TestCase):
                 "success": True,
                 "final_url": "https://auth.openai.com/u/signup/identifier",
                 "cookie_count": 1,
+                "browser_tokens": {
+                    "authorize_continue": '{"token":"browser-ok"}',
+                },
+                "auth_session": {"workspaces": []},
+                "sentinel_artifacts": {"flows": {}},
             }
 
         fake_session = FakeSession()
@@ -1688,7 +1693,109 @@ class ProxyNormalizationTests(unittest.TestCase):
                 "screen_hint": "signup",
             },
         )
-        self.assertEqual(post_kwargs["headers"]["openai-sentinel-token"], '{"token":"ok"}')
+        self.assertEqual(post_kwargs["headers"]["openai-sentinel-token"], '{"token":"browser-ok"}')
+
+    def test_protocol_registrar_step0_fails_when_browser_bootstrap_still_lacks_login_session(self):
+        class FakeCookies(dict):
+            def __init__(self):
+                super().__init__()
+                self.jar = []
+
+            def set(self, name, value, domain=""):
+                del domain
+                self[name] = value
+
+        class FakeResponse:
+            def __init__(self, status_code, *, url="", text="", json_data=None):
+                self.status_code = status_code
+                self.url = url
+                self.text = text
+                self._json_data = json_data
+                self.headers = {}
+
+            def json(self):
+                if self._json_data is None:
+                    raise ValueError("no json")
+                return self._json_data
+
+        class FakeSession:
+            def __init__(self):
+                self.cookies = FakeCookies()
+                self.get_calls = []
+                self.post_calls = []
+
+            def get(self, url, **kwargs):
+                self.get_calls.append((url, kwargs))
+                return FakeResponse(
+                    403,
+                    url="https://auth.openai.com/api/oauth/oauth2/auth",
+                    text="<!DOCTYPE html><title>Just a moment...</title>",
+                )
+
+            def post(self, url, **kwargs):
+                self.post_calls.append((url, kwargs))
+                return FakeResponse(200, url=url, json_data={"page": {"type": "password"}})
+
+        fake_session = FakeSession()
+        with mock.patch("protocol_keygen.create_session", return_value=fake_session):
+            registrar = protocol_keygen.ProtocolRegistrar(browser_tokens={"authorize_continue": '{"token":"ok"}'})
+
+        with mock.patch("protocol_keygen.generate_pkce", return_value=("verifier-123", "challenge-123")):
+            with mock.patch("protocol_keygen.secrets.token_urlsafe", return_value="state-123"):
+                with mock.patch(
+                    "protocol_keygen._bootstrap_login_session_via_browser",
+                    return_value={
+                        "success": False,
+                        "final_url": "https://auth.openai.com/u/signup/identifier",
+                        "cookie_count": 0,
+                        "error": "login_session missing after browser bootstrap",
+                        "browser_tokens": {
+                            "authorize_continue": '{"token":"browser-but-no-login"}',
+                        },
+                    },
+                ) as bootstrap_mock:
+                    ok = registrar.step0_init_oauth_session("user@example.com")
+
+        self.assertFalse(ok)
+        bootstrap_mock.assert_called_once()
+        self.assertEqual(fake_session.post_calls, [])
+        self.assertEqual(registrar._browser_tokens["authorize_continue"], '{"token":"ok"}')
+
+    def test_legacy_playwright_init_uses_shared_browser_bootstrap(self):
+        register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)
+        register._print = mock.Mock()
+        register.session = mock.Mock()
+        register.session.cookies = []
+        register.session.post = mock.Mock(return_value=mock.Mock(status_code=200, text=""))
+        register.AUTH = "https://auth.openai.com"
+        register.ua = "UA-123"
+        register.proxy = "http://127.0.0.1:9000"
+        register.device_id = "did-123"
+        register.sec_ch_ua = '"Chromium";v="136"'
+        register.impersonate = "chrome136"
+
+        with mock.patch("ncs_register_legacy._generate_pkce", return_value=("verifier-123", "challenge-123")):
+            with mock.patch("ncs_register_legacy.secrets.token_urlsafe", return_value="state-123"):
+                with mock.patch("protocol_keygen._bootstrap_login_session_via_browser", return_value={
+                    "success": True,
+                    "final_url": "https://auth.openai.com/u/signup/identifier",
+                    "cookie_count": 2,
+                }) as bootstrap_mock:
+                    with mock.patch("ncs_register_legacy.build_sentinel_token", return_value='{"token":"legacy-ac"}'):
+                        ncs_register_legacy.ChatGPTRegister._init_oauth_via_playwright(register, "user@example.com")
+
+        bootstrap_mock.assert_called_once()
+        call_args = bootstrap_mock.call_args
+        self.assertEqual(call_args.args[0], register.session)
+        self.assertIn("/oauth/authorize?", call_args.args[1])
+        self.assertEqual(call_args.kwargs["user_agent"], "UA-123")
+        self.assertEqual(call_args.kwargs["proxy"], "http://127.0.0.1:9000")
+        self.assertEqual(call_args.kwargs["timeout_ms"], 45000)
+        register.session.post.assert_called_once()
+        self.assertEqual(
+            register.session.post.call_args.kwargs["headers"]["openai-sentinel-token"],
+            '{"token":"legacy-ac"}',
+        )
 
     def test_run_register_does_not_treat_auth_authorize_url_with_chatgpt_redirect_query_as_complete(self):
         register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)

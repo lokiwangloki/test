@@ -2799,8 +2799,8 @@ class ChatGPTRegister:
     # ==================== 自动注册主流程 ====================
 
     def _init_oauth_via_playwright(self, email):
-        """用 Playwright 浏览器执行步骤0：GET /oauth/authorize 绕 CF + POST authorize/continue"""
-        from playwright.sync_api import sync_playwright
+        """用共享浏览器兜底完成步骤0：建立 login_session + POST authorize/continue"""
+        from protocol_keygen import _bootstrap_login_session_via_browser
 
         self._print("[步骤0] Playwright 初始化 OAuth 会话")
         code_verifier, code_challenge = _generate_pkce()
@@ -2814,27 +2814,21 @@ class ChatGPTRegister:
         }
         authorize_url = f"{self.AUTH}/oauth/authorize?{urlencode(authorize_params)}"
 
-        with sync_playwright() as p:
-            launch_args = {"headless": True, "args": ["--no-sandbox", "--disable-blink-features=AutomationControlled"]}
-            if self.proxy:
-                launch_args["proxy"] = {"server": self.proxy}
-            browser = p.chromium.launch(**launch_args)
-            try:
-                context = browser.new_context(
-                    viewport={"width": 1920, "height": 1080},
-                    user_agent=self.ua, ignore_https_errors=True,
-                )
-                page = context.new_page()
-                page.goto(authorize_url, wait_until="domcontentloaded", timeout=30000)
-                self._print(f"[步骤0] Playwright 页面: {page.url[:80]}")
+        bootstrap = _bootstrap_login_session_via_browser(
+            self.session,
+            authorize_url,
+            user_agent=self.ua,
+            proxy=self.proxy or "",
+            timeout_ms=45000,
+        )
+        if not bootstrap.get("success"):
+            detail = str(bootstrap.get("error") or "未知错误").strip() or "未知错误"
+            raise Exception(f"Playwright 初始化 OAuth 会话失败: {detail}")
 
-                # 从浏览器导出所有 cookie 到 curl_cffi session
-                cookies = context.cookies()
-                for c in cookies:
-                    self.session.cookies.set(c["name"], c["value"], domain=c.get("domain", ""))
-                self._print(f"[步骤0] 导出 {len(cookies)} 个 cookie")
-            finally:
-                browser.close()
+        final_url = str(bootstrap.get("final_url") or "").strip()
+        cookie_count = int(bootstrap.get("cookie_count") or 0)
+        self._print(f"[步骤0] Playwright 页面: {(final_url or authorize_url)[:80]}")
+        self._print(f"[步骤0] 导出 {cookie_count} 个 cookie")
 
         has_login = any(getattr(c, "name", "") == "login_session" for c in self.session.cookies)
         self._print(f"[步骤0] login_session: {'Y' if has_login else 'N'}")

@@ -759,12 +759,49 @@ def _bootstrap_login_session_via_browser(
         "final_url": "",
         "cookie_count": 0,
         "error": "",
+        "auth_session": None,
+        "browser_tokens": {},
+        "sentinel_artifacts": None,
     }
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:
         result["error"] = f"playwright import failed: {exc}"
         return result
+
+    flows = [
+        "authorize_continue",
+        "username_password_create",
+        "email_otp_validate",
+        "password_verify",
+        "oauth_create_account",
+    ]
+    sentinel_artifacts = None
+    try:
+        from sentinel_browser import get_all_sentinel_artifacts
+    except Exception:
+        get_all_sentinel_artifacts = None
+
+    if get_all_sentinel_artifacts is not None:
+        try:
+            sentinel_artifacts = get_all_sentinel_artifacts(
+                flows=flows,
+                proxy=proxy,
+                timeout_ms=max(timeout_ms, 60000),
+                user_agent=user_agent or USER_AGENT,
+            ) or {}
+        except Exception as exc:
+            result["error"] = f"sentinel bootstrap failed: {exc}"
+
+    browser_tokens = {}
+    if isinstance(sentinel_artifacts, dict):
+        result["sentinel_artifacts"] = sentinel_artifacts
+        for flow in flows:
+            raw_token, _raw_so_token = _extract_browser_flow_payload(sentinel_artifacts, flow)
+            compact_token = _compact_browser_json_string(raw_token)
+            if compact_token:
+                browser_tokens[flow] = compact_token
+    result["browser_tokens"] = browser_tokens
 
     launch_args = {
         "headless": True,
@@ -796,7 +833,18 @@ def _bootstrap_login_session_via_browser(
                 )
             page = context.new_page()
             page.goto(authorize_url, wait_until="domcontentloaded", timeout=timeout_ms)
-            page.wait_for_timeout(3000)
+            try:
+                page.wait_for_function(
+                    "() => document.cookie.includes('login_session=') || location.href.includes('/u/signup') || location.href.includes('/log-in')",
+                    timeout=min(timeout_ms, 15000),
+                )
+            except Exception:
+                pass
+            try:
+                page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 5000))
+            except Exception:
+                pass
+            page.wait_for_timeout(2000)
             result["final_url"] = str(page.url or "").strip()
 
             cookie_count = 0
@@ -809,9 +857,10 @@ def _bootstrap_login_session_via_browser(
                 session_obj.cookies.set(name, value, domain=domain)
                 cookie_count += 1
             result["cookie_count"] = cookie_count
+            result["auth_session"] = _decode_oauth_session_cookie(session_obj)
             result["success"] = bool(_get_session_cookie_value(session_obj, "login_session"))
             if not result["success"]:
-                result["error"] = "login_session missing after browser bootstrap"
+                result["error"] = result["error"] or "login_session missing after browser bootstrap"
         except Exception as exc:
             result["error"] = str(exc)
         finally:
@@ -848,6 +897,32 @@ def _load_oauth_browser_tokens(flows=None, proxy=None, timeout_ms=60000):
         flow: (tokens.get(flow) if isinstance(tokens, dict) else None)
         for flow in normalized_flows
     }
+
+
+def _compact_browser_json_string(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _extract_browser_flow_payload(result, flow):
+    if not isinstance(result, dict):
+        return None, None
+
+    flows_payload = result.get("flows")
+    if isinstance(flows_payload, dict):
+        flow_payload = flows_payload.get(flow)
+        if isinstance(flow_payload, dict):
+            return flow_payload.get("token"), flow_payload.get("soToken")
+        return flow_payload, None
+
+    flow_payload = result.get(flow)
+    if isinstance(flow_payload, dict) and ("token" in flow_payload or "soToken" in flow_payload):
+        return flow_payload.get("token"), flow_payload.get("soToken")
+    return flow_payload, None
 
 
 def _decode_oauth_session_cookie(session_obj):
@@ -1308,6 +1383,15 @@ class ProtocolRegistrar:
                 has_login_session = "login_session" in self.session.cookies
                 final_url = str(browser_bootstrap.get("final_url") or "").strip()
                 cookie_count = int(browser_bootstrap.get("cookie_count") or 0)
+                browser_tokens = browser_bootstrap.get("browser_tokens") or {}
+                if isinstance(browser_tokens, dict):
+                    self._browser_tokens.update(
+                        {
+                            flow: token
+                            for flow, token in browser_tokens.items()
+                            if token
+                        }
+                    )
                 print(
                     "  浏览器兜底: ✅ 已获取 login_session"
                     f" (cookies={cookie_count}, final_url={final_url or '-'})"
