@@ -548,6 +548,71 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(chosen, "afar-enrage-curvy@duck.com")
         self.assertEqual(remaining, "poem-jarring-curve@duck.com\n")
 
+    def test_load_duck_bearers_supports_json_array_secret(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"DUCK_EMAIL_BEARERS": '["token-1","token-2"]', "DUCK_EMAIL_BEARER": ""},
+            clear=False,
+        ):
+            bearers = get_duck.load_duck_bearers()
+
+        self.assertEqual(bearers, ["token-1", "token-2"])
+
+    def test_fetch_duck_addresses_falls_back_to_next_bearer(self):
+        pool_file = Path("/tmp/test_duckaddress_fetch_pool.txt")
+        pool_file.unlink(missing_ok=True)
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"address": "alpha-beta-gamma"}
+
+        calls = []
+
+        def fake_post(url, headers=None, timeout=None, impersonate=None):
+            calls.append({
+                "url": url,
+                "authorization": (headers or {}).get("Authorization", ""),
+                "timeout": timeout,
+                "impersonate": impersonate,
+            })
+            if headers and headers.get("Authorization") == "Bearer bad-token":
+                raise RuntimeError("401 unauthorized")
+            return FakeResponse()
+
+        fake_requests = types.SimpleNamespace(post=fake_post)
+        fake_curl_module = types.ModuleType("curl_cffi")
+        fake_curl_module.requests = fake_requests
+
+        try:
+            with mock.patch.dict(
+                sys.modules,
+                {"curl_cffi": fake_curl_module},
+            ):
+                with mock.patch.dict(
+                    "os.environ",
+                    {"DUCK_EMAIL_BEARERS": '["bad-token","good-token"]', "DUCK_EMAIL_BEARER": ""},
+                    clear=False,
+                ):
+                    with mock.patch("time.sleep", return_value=None):
+                        added = get_duck.fetch_duck_addresses(
+                            output_file=str(pool_file),
+                            stop_count=1,
+                            delay_seconds=0,
+                        )
+        finally:
+            saved = pool_file.read_text(encoding="utf-8") if pool_file.exists() else ""
+            pool_file.unlink(missing_ok=True)
+
+        self.assertEqual(added, ["alpha-beta-gamma@duck.com"])
+        self.assertEqual(saved, "alpha-beta-gamma@duck.com\n")
+        self.assertEqual(
+            [item["authorization"] for item in calls],
+            ["Bearer bad-token", "Bearer good-token"],
+        )
+
     def test_qq_mail_reader_extracts_verification_code_directly(self):
         body = "Your ChatGPT verification code is 834271. It expires in 10 minutes."
 

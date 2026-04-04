@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -17,14 +19,14 @@ def _repo_default_output_file() -> Path:
 
 
 def resolve_output_file(output_file: str | None = None) -> Path:
-    candidates: list[Path] = []
     if output_file:
-        candidates.append(Path(output_file).expanduser())
+        return Path(output_file).expanduser()
 
     env_file = os.environ.get("DUCK_ADDRESS_FILE", "").strip()
     if env_file:
-        candidates.append(Path(env_file).expanduser())
+        return Path(env_file).expanduser()
 
+    candidates: list[Path] = []
     repo_file = _repo_default_output_file()
     candidates.append(repo_file)
 
@@ -92,31 +94,57 @@ def _duck_headers(bearer: str) -> dict[str, str]:
     }
 
 
-def fetch_duck_addresses(
+def _parse_duck_bearer_list(raw: str | None) -> list[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return []
+
+    if text.startswith("["):
+        try:
+            data = json.loads(text)
+        except Exception:
+            data = None
+        if isinstance(data, list):
+            return [str(item).strip() for item in data if str(item).strip()]
+
+    parts = re.split(r"[\r\n,]+", text)
+    normalized = [part.strip().strip("\"'") for part in parts if part.strip()]
+    if normalized:
+        return normalized
+    return [text]
+
+
+def load_duck_bearers(bearer: str | list[str] | tuple[str, ...] | None = None) -> list[str]:
+    if isinstance(bearer, (list, tuple)):
+        return [str(item).strip() for item in bearer if str(item).strip()]
+
+    explicit = _parse_duck_bearer_list(bearer)
+    if explicit:
+        return explicit
+
+    multi_env = _parse_duck_bearer_list(os.environ.get("DUCK_EMAIL_BEARERS", ""))
+    if multi_env:
+        return multi_env
+
+    return _parse_duck_bearer_list(os.environ.get("DUCK_EMAIL_BEARER", ""))
+
+
+def _collect_duck_addresses_with_bearer(
+    curl_requests,
     *,
-    output_file: str | None = None,
-    bearer: str | None = None,
-    api_url: str | None = None,
-    stop_count: int = DEFAULT_STOP_COUNT,
-    delay_seconds: float = DEFAULT_DELAY,
+    bearer: str,
+    api_url: str,
+    stop_count: int,
+    delay_seconds: float,
 ) -> list[str]:
-    from curl_cffi import requests as curl_requests
-
-    token = str(bearer or os.environ.get("DUCK_EMAIL_BEARER", "")).strip()
-    if not token:
-        raise RuntimeError("DUCK_EMAIL_BEARER 未设置，无法生成 duck 邮箱池")
-
-    url = str(api_url or os.environ.get("DUCK_EMAIL_API_URL", DEFAULT_API_URL)).strip() or DEFAULT_API_URL
-    existing_addresses = set(load_duck_addresses(output_file))
     all_addresses: list[str] = []
     last_address = ""
     same_count = 0
 
-    print("=== 开始自动获取 DuckDuckGo 邮箱地址（追加模式）===")
     while True:
         response = curl_requests.post(
-            url,
-            headers=_duck_headers(token),
+            api_url,
+            headers=_duck_headers(bearer),
             timeout=10,
             impersonate="chrome",
         )
@@ -140,8 +168,45 @@ def fetch_duck_addresses(
 
         print(f"ℹ️ 连续相同次数：{same_count}/{stop_count}")
         if same_count >= stop_count:
-            break
+            return all_addresses
         time.sleep(delay_seconds)
+
+
+def fetch_duck_addresses(
+    *,
+    output_file: str | None = None,
+    bearer: str | list[str] | tuple[str, ...] | None = None,
+    api_url: str | None = None,
+    stop_count: int = DEFAULT_STOP_COUNT,
+    delay_seconds: float = DEFAULT_DELAY,
+) -> list[str]:
+    from curl_cffi import requests as curl_requests
+
+    bearers = load_duck_bearers(bearer)
+    if not bearers:
+        raise RuntimeError("DUCK_EMAIL_BEARERS / DUCK_EMAIL_BEARER 未设置，无法生成 duck 邮箱池")
+
+    url = str(api_url or os.environ.get("DUCK_EMAIL_API_URL", DEFAULT_API_URL)).strip() or DEFAULT_API_URL
+    existing_addresses = set(load_duck_addresses(output_file))
+    all_addresses: list[str] = []
+    last_error: Exception | None = None
+
+    print("=== 开始自动获取 DuckDuckGo 邮箱地址（追加模式）===")
+    for index, token in enumerate(bearers, start=1):
+        try:
+            all_addresses = _collect_duck_addresses_with_bearer(
+                curl_requests,
+                bearer=token,
+                api_url=url,
+                stop_count=stop_count,
+                delay_seconds=delay_seconds,
+            )
+            break
+        except Exception as exc:
+            last_error = exc
+            print(f"[!] Duck bearer {index}/{len(bearers)} 获取失败: {exc}")
+    else:
+        raise RuntimeError(f"所有 Duck bearer 均不可用，已尝试 {len(bearers)} 个: {last_error}")
 
     seen = set(existing_addresses)
     to_add: list[str] = []
