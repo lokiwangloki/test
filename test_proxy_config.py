@@ -697,6 +697,64 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIn("recent_api_addresses", state)
         self.assertIn("wham-justness-cape@duck.com", state["recent_api_addresses"])
 
+    def test_fetch_duck_addresses_sticks_to_active_bearer_until_repeat_threshold(self):
+        pool_file = Path("/tmp/test_duck_fill_first_pool.txt")
+        pool_file.write_text("", encoding="utf-8")
+        state_file = pool_file.with_name("duck_state.json")
+        state_file.write_text(
+            json.dumps({"bearers": {}, "recent_api_addresses": {}, "active_bearer_index": 0}),
+            encoding="utf-8",
+        )
+
+        class FakeResponse:
+            def __init__(self, address):
+                self._address = address
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"address": self._address}
+
+        calls = []
+        responses = {
+            "token-1": [
+                FakeResponse("same-one"),
+                FakeResponse("same-one"),
+                FakeResponse("same-one"),
+            ],
+            "token-2": [
+                FakeResponse("fresh-two"),
+                FakeResponse("fresh-two"),
+            ],
+        }
+
+        def fake_post(url, headers=None, timeout=None, impersonate=None):
+            del url, timeout, impersonate
+            auth = (headers or {}).get("Authorization", "")
+            calls.append(auth)
+            if "token-1" in auth:
+                return responses["token-1"].pop(0)
+            return responses["token-2"].pop(0)
+
+        fake_requests = types.SimpleNamespace(post=fake_post)
+        fake_curl_module = types.ModuleType("curl_cffi")
+        fake_curl_module.requests = fake_requests
+
+        try:
+            with mock.patch.dict(sys.modules, {"curl_cffi": fake_curl_module}):
+                with mock.patch.dict("os.environ", {"DUCK_EMAIL_BEARERS": '["token-1","token-2"]', "DUCK_EMAIL_BEARER": ""}, clear=False):
+                    with mock.patch("time.sleep", return_value=None):
+                        added = get_duck.fetch_duck_addresses(output_file=str(pool_file), stop_count=2, delay_seconds=0)
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+        finally:
+            pool_file.unlink(missing_ok=True)
+            state_file.unlink(missing_ok=True)
+
+        self.assertEqual(added, ["same-one@duck.com"])
+        self.assertEqual(calls, ["Bearer token-1", "Bearer token-1"])
+        self.assertEqual(state.get("active_bearer_index"), 1)
+
     def test_fetch_duck_addresses_falls_back_to_next_bearer(self):
         pool_file = Path("/tmp/test_duckaddress_fetch_pool.txt")
         pool_file.unlink(missing_ok=True)

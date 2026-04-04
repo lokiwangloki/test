@@ -210,18 +210,22 @@ class RegistrationEngine:
                 ProtocolRegistrar, create_session, perform_codex_oauth_login_http,
                 save_tokens, save_account, create_temp_email, PROXY, COMMON_HEADERS,
             )
-            from sentinel_browser import get_all_sentinel_tokens
+            from sentinel_browser import get_all_sentinel_tokens, set_browser_log_prefix
 
             registration_otp_fetcher = lambda timeout: mailbox_service.wait_for_verification_code(timeout, stage="register")
             oauth_otp_fetcher = lambda timeout: mailbox_service.wait_for_verification_code(timeout, stage="oauth")
             registration_output = io.StringIO()
             try:
                 with _capture_stage_output() as registration_output:
-                    browser_tokens = get_all_sentinel_tokens(
-                        proxy=PROXY if PROXY else None,
-                        user_agent=COMMON_HEADERS.get("user-agent", ""),
-                    )
-                    registrar = ProtocolRegistrar(browser_tokens=browser_tokens)
+                    set_browser_log_prefix(f"[{account_tag}] ")
+                    try:
+                        browser_tokens = get_all_sentinel_tokens(
+                            proxy=PROXY if PROXY else None,
+                            user_agent=COMMON_HEADERS.get("user-agent", ""),
+                        )
+                    finally:
+                        set_browser_log_prefix("")
+                    registrar = ProtocolRegistrar(browser_tokens=browser_tokens, tag=account_tag)
 
                     if not registrar.step0_init_oauth_session(mailbox.email):
                         raise Exception("OAuth 会话初始化失败")

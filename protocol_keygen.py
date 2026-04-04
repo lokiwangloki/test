@@ -1259,15 +1259,20 @@ class ProtocolRegistrar:
       步骤5:   创建账号         → POST /api/accounts/create_account
     """
 
-    def __init__(self, browser_tokens=None):
+    def __init__(self, browser_tokens=None, tag: str = ""):
         # HTTP 会话（全流程纯 HTTP，cookies 通过 302 跟随自动累积）
         self.session = create_session()
         self.device_id = generate_device_id()
         self.sentinel_gen = SentinelTokenGenerator(device_id=self.device_id)
         self.code_verifier = None
         self.state = None
+        self.tag = str(tag or "")
         # Playwright 预生成的 sentinel token 缓存（一次启动浏览器批量生成所有 flow）
         self._browser_tokens = browser_tokens or {}
+
+    def _tagged_print(self, message: str) -> None:
+        prefix = f"[{self.tag}] " if self.tag else ""
+        print(f"{prefix}{message}")
 
     def _get_sentinel_token(self, flow):
         """获取 sentinel token：优先 Playwright 预生成，fallback 纯 HTTP PoW"""
@@ -1317,7 +1322,7 @@ class ProtocolRegistrar:
         返回:
             bool: 是否成功提交邮箱并建立 session
         """
-        print("\n🔗 [步骤0] OAuth 会话初始化 + 邮箱提交（纯 HTTP，零浏览器）")
+        self._tagged_print("\n🔗 [步骤0] OAuth 会话初始化 + 邮箱提交（纯 HTTP，零浏览器）")
 
         # ===== 设置 oai-did cookie（两种 domain 格式兼容） =====
         self.session.cookies.set("oai-did", self.device_id, domain=".auth.openai.com")
@@ -1347,7 +1352,7 @@ class ProtocolRegistrar:
         authorize_url = f"{OPENAI_AUTH_BASE}/oauth/authorize?{urlencode(authorize_params)}"
 
         # ===== 步骤0a: GET /oauth/authorize → 获取 login_session cookie =====
-        print("\n  --- [步骤0a] GET /oauth/authorize ---")
+        self._tagged_print("\n  --- [步骤0a] GET /oauth/authorize ---")
         resp = None
         try:
             resp = self.session.get(
@@ -1357,17 +1362,17 @@ class ProtocolRegistrar:
                 verify=False,
                 timeout=30,
             )
-            print(f"  步骤0a: {resp.status_code}")
+            self._tagged_print(f"  步骤0a: {resp.status_code}")
         except Exception as e:
-            print(f"  ❌ OAuth 授权请求失败: {e}")
+            self._tagged_print(f"  ❌ OAuth 授权请求失败: {e}")
             return False
 
         # 检查是否获取到 login_session cookie
         has_login_session = "login_session" in self.session.cookies
-        print(f"  login_session: {'✅ 已获取' if has_login_session else '❌ 未获取'}")
+        self._tagged_print(f"  login_session: {'✅ 已获取' if has_login_session else '❌ 未获取'}")
         if not has_login_session:
             oauth2_url = f"{OPENAI_AUTH_BASE}/api/oauth/oauth2/auth"
-            print("  ⚠️ 未获得 login_session cookie，尝试 /api/oauth/oauth2/auth ...")
+            self._tagged_print("  ⚠️ 未获得 login_session cookie，尝试 /api/oauth/oauth2/auth ...")
             try:
                 resp_oauth2 = self.session.get(
                     oauth2_url,
@@ -1380,19 +1385,19 @@ class ProtocolRegistrar:
                     verify=False,
                     timeout=30,
                 )
-                print(f"  oauth2/auth: {resp_oauth2.status_code}")
+                self._tagged_print(f"  oauth2/auth: {resp_oauth2.status_code}")
                 has_login_session = "login_session" in self.session.cookies
-                print(f"  oauth2/auth 后 login_session: {'✅ 已获取' if has_login_session else '❌ 未获取'}")
+                self._tagged_print(f"  oauth2/auth 后 login_session: {'✅ 已获取' if has_login_session else '❌ 未获取'}")
                 if not has_login_session and resp_oauth2.status_code >= 400:
-                    print(f"  oauth2/auth 响应预览: {resp_oauth2.text[:300]}")
+                    self._tagged_print(f"  oauth2/auth 响应预览: {resp_oauth2.text[:300]}")
             except Exception as e:
-                print(f"  ⚠️ oauth2/auth 请求失败: {e}")
+                self._tagged_print(f"  ⚠️ oauth2/auth 请求失败: {e}")
 
         if not has_login_session:
-            print("  ⚠️ HTTP 路径仍未获得 login_session，尝试浏览器兜底...")
+            self._tagged_print("  ⚠️ HTTP 路径仍未获得 login_session，尝试浏览器兜底...")
             if resp is not None and resp.status_code >= 400:
-                print(f"  OAuth 授权响应: HTTP {resp.status_code}")
-                print(f"  响应预览: {resp.text[:300]}")
+                self._tagged_print(f"  OAuth 授权响应: HTTP {resp.status_code}")
+                self._tagged_print(f"  响应预览: {resp.text[:300]}")
             browser_bootstrap = _bootstrap_login_session_via_browser(
                 self.session,
                 authorize_url,
@@ -1413,22 +1418,22 @@ class ProtocolRegistrar:
                             if token
                         }
                     )
-                print(
+                self._tagged_print(
                     "  浏览器兜底: ✅ 已获取 login_session"
                     f" (cookies={cookie_count}, final_url={final_url or '-'})"
                 )
             else:
                 detail = str(browser_bootstrap.get("error") or "未知错误").strip() or "未知错误"
-                print(
+                self._tagged_print(
                     "  浏览器兜底失败:"
                     f" {detail} (cookies={cookie_count}, final_url={final_url or '-'})"
                 )
                 return False
 
         if not ("login_session" in self.session.cookies):
-            print("  ❌ login_session 仍未获取，终止后续步骤")
+            self._tagged_print("  ❌ login_session 仍未获取，终止后续步骤")
             return False
-        print("\n  --- [步骤0b] POST /api/accounts/authorize/continue ---")
+        self._tagged_print("\n  --- [步骤0b] POST /api/accounts/authorize/continue ---")
 
         # 构造请求头（参考 perform_codex_oauth_login_http 的步骤2）
         headers = dict(COMMON_HEADERS)
@@ -1439,7 +1444,7 @@ class ProtocolRegistrar:
         # 获取 authorize_continue 的 sentinel token
         sentinel_token = self._get_sentinel_token("authorize_continue")
         if not sentinel_token:
-            print("  ❌ 无法获取 authorize_continue 的 sentinel token")
+            self._tagged_print("  ❌ 无法获取 authorize_continue 的 sentinel token")
             return False
         headers["openai-sentinel-token"] = sentinel_token
 
@@ -1455,11 +1460,11 @@ class ProtocolRegistrar:
                 timeout=30,
             )
         except Exception as e:
-            print(f"  ❌ 邮箱提交失败: {e}")
+            self._tagged_print(f"  ❌ 邮箱提交失败: {e}")
             return False
 
         if resp.status_code != 200:
-            print(f"  ❌ 邮箱提交失败: HTTP {resp.status_code}")
+            self._tagged_print(f"  ❌ 邮箱提交失败: HTTP {resp.status_code}")
             return False
 
         try:
@@ -1467,7 +1472,7 @@ class ProtocolRegistrar:
             page_type = data.get("page", {}).get("type", "")
         except Exception:
             page_type = "?"
-        print(f"  步骤0b: {resp.status_code} → {page_type}")
+        self._tagged_print(f"  步骤0b: {resp.status_code} → {page_type}")
 
         return True
 
@@ -1493,7 +1498,7 @@ class ProtocolRegistrar:
         - 邮箱字段名是 'username' 而非 'email'（已通过抓包验证）
         - 此端点可能需要 sentinel token（通过请求头传递）
         """
-        print(f"\n🔑 [步骤2-HTTP] 注册用户: {email}")
+        self._tagged_print(f"\n🔑 [步骤2-HTTP] 注册用户: {email}")
         
         url = f"{OPENAI_AUTH_BASE}/api/accounts/user/register"
         headers = self._build_headers(
@@ -1514,14 +1519,14 @@ class ProtocolRegistrar:
         resp = self.session.post(url, json=payload, headers=headers, verify=False, timeout=30)
 
         if resp.status_code == 200:
-            print("  ✅ 用户注册接口成功")
+            self._tagged_print("  ✅ 用户注册接口成功")
             return True
         else:
-            print(f"  ❌ 失败: {resp.text[:300]}")
+            self._tagged_print(f"  ❌ 失败: {resp.text[:300]}")
             # 某些 302 重定向也算成功
             if resp.status_code in (301, 302):
                 redirect_url = resp.headers.get('Location', '')
-                print(f"  ℹ️ 重定向到: {redirect_url[:100]}")
+                self._tagged_print(f"  ℹ️ 重定向到: {redirect_url[:100]}")
                 if 'email-otp' in redirect_url or 'email-verification' in redirect_url:
                     return True
             return False
@@ -1534,7 +1539,7 @@ class ProtocolRegistrar:
         
         这两个都是 GET 请求，不需要 sentinel token。
         """
-        print("\n📬 [步骤3-HTTP] 触发验证码发送")
+        self._tagged_print("\n📬 [步骤3-HTTP] 触发验证码发送")
 
         # 3a: 请求 send 端点（触发邮件发送）
         url_send = f"{OPENAI_AUTH_BASE}/api/accounts/email-otp/send"
@@ -1545,7 +1550,7 @@ class ProtocolRegistrar:
             url_send, headers=headers, verify=False,
             timeout=30, allow_redirects=True
         )
-        print(f"  send 状态码: {resp.status_code}")
+        self._tagged_print(f"  send 状态码: {resp.status_code}")
 
         # 3b: 请求 email-verification 页面（获取后续 cookie）
         url_verify = f"{OPENAI_AUTH_BASE}/email-verification"
@@ -1555,8 +1560,8 @@ class ProtocolRegistrar:
             url_verify, headers=headers, verify=False,
             timeout=30, allow_redirects=True
         )
-        print(f"  email-verification 状态码: {resp.status_code}")
-        print("  ✅ 验证码发送触发完成")
+        self._tagged_print(f"  email-verification 状态码: {resp.status_code}")
+        self._tagged_print("  ✅ 验证码发送触发完成")
         return True
 
     def step4_validate_otp(self, code):
@@ -1566,7 +1571,7 @@ class ProtocolRegistrar:
         
         从 cURL 分析确认：此步骤不需要 sentinel token。
         """
-        print(f"\n🔢 [步骤4-HTTP] 验证邮箱 OTP: {code}")
+        self._tagged_print(f"\n🔢 [步骤4-HTTP] 验证邮箱 OTP: {code}")
         url = f"{OPENAI_AUTH_BASE}/api/accounts/email-otp/validate"
         headers = self._build_headers(
             referer=f"{OPENAI_AUTH_BASE}/email-verification",
@@ -1578,13 +1583,13 @@ class ProtocolRegistrar:
         payload = {"code": code}
 
         resp = self.session.post(url, json=payload, headers=headers, verify=False, timeout=30)
-        print(f"  状态码: {resp.status_code}")
+        self._tagged_print(f"  状态码: {resp.status_code}")
 
         if resp.status_code == 200:
-            print("  ✅ 邮箱验证成功")
+            self._tagged_print("  ✅ 邮箱验证成功")
             return True
         else:
-            print(f"  ❌ 失败: {resp.text[:300]}")
+            self._tagged_print(f"  ❌ 失败: {resp.text[:300]}")
             return False
 
     def step5_create_account(self, first_name, last_name, birthdate):
@@ -1596,7 +1601,7 @@ class ProtocolRegistrar:
         不带 openai-sentinel-token 会返回 400 registration_disallowed。
         需先调 build_sentinel_token() 获取完整 PoW token 再发请求。
         """
-        print(f"\n📝 [步骤5-HTTP] 创建账号（{first_name} {last_name}, {birthdate}）")
+        self._tagged_print(f"\n📝 [步骤5-HTTP] 创建账号（{first_name} {last_name}, {birthdate}）")
         url = f"{OPENAI_AUTH_BASE}/api/accounts/create_account"
         headers = self._build_headers(
             referer=f"{OPENAI_AUTH_BASE}/about-you",
@@ -1607,9 +1612,9 @@ class ProtocolRegistrar:
         
         if sentinel_token:
             headers["openai-sentinel-token"] = sentinel_token
-            print("  ✅ 已获取 create_account sentinel token")
+            self._tagged_print("  ✅ 已获取 create_account sentinel token")
         else:
-            print("  ⚠️ 未能获取 sentinel token，尝试不带 token 发送")
+            self._tagged_print("  ⚠️ 未能获取 sentinel token，尝试不带 token 发送")
 
         payload = {
             "name": f"{first_name} {last_name}",
@@ -1617,7 +1622,7 @@ class ProtocolRegistrar:
         }
 
         resp = self.session.post(url, json=payload, headers=headers, verify=False, timeout=30)
-        print(f"  状态码: {resp.status_code}")
+        self._tagged_print(f"  状态码: {resp.status_code}")
 
         if resp.status_code == 200:
             print("  ✅ 账号创建完成！")
@@ -1626,7 +1631,7 @@ class ProtocolRegistrar:
             "sentinel" in resp.text.lower()
             or "registration_disallowed" in resp.text.lower()
         ):
-            print(f"  ⚠️ sentinel 校验失败 ({resp.status_code})，重新获取 token 重试...")
+            self._tagged_print(f"  ⚠️ sentinel 校验失败 ({resp.status_code})，重新获取 token 重试...")
             # 重新获取 sentinel token 重试（强制用 Playwright）
             retry_token = None
             try:
@@ -1647,14 +1652,14 @@ class ProtocolRegistrar:
                 headers["openai-sentinel-token"] = self.sentinel_gen.generate_token()
             resp = self.session.post(url, json=payload, headers=headers, verify=False, timeout=30)
             if resp.status_code == 200:
-                print("  ✅ 账号创建完成（sentinel 重试成功）！")
+                self._tagged_print("  ✅ 账号创建完成（sentinel 重试成功）！")
                 return True
-            print(f"  ❌ 重试仍失败: {resp.text[:300]}")
+            self._tagged_print(f"  ❌ 重试仍失败: {resp.text[:300]}")
             return False
         else:
-            print(f"  ❌ 失败: {resp.text[:300]}")
+            self._tagged_print(f"  ❌ 失败: {resp.text[:300]}")
             if resp.status_code in (301, 302):
-                print("  ℹ️ 收到重定向，可能已成功")
+                self._tagged_print("  ℹ️ 收到重定向，可能已成功")
                 return True
             return False
 
@@ -1665,12 +1670,12 @@ class ProtocolRegistrar:
         first_name, last_name = generate_random_name()
         birthdate = generate_random_birthday()
 
-        print(f"\n� 注册: {email}")
+        self._tagged_print(f"\n� 注册: {email}")
 
         try:
             # ===== 步骤0：OAuth 会话初始化 + 邮箱提交（纯 HTTP）=====
             if not self.step0_init_oauth_session(email):
-                print("❌ 步骤0失败：OAuth 会话初始化失败")
+                self._tagged_print("❌ 步骤0失败：OAuth 会话初始化失败")
                 return False, email, password
 
             time.sleep(1)
@@ -1678,7 +1683,7 @@ class ProtocolRegistrar:
             # 注意：邮箱已在步骤0中通过 POST authorize/continue 提交完成
             # 步骤2提交用户名（邮箱）+ 密码完成注册
             if not self.step2_register_user(email, password):
-                print("❌ 步骤2失败：用户注册失败")
+                self._tagged_print("❌ 步骤2失败：用户注册失败")
                 return False, email, password
 
             time.sleep(1)
@@ -1691,7 +1696,7 @@ class ProtocolRegistrar:
             mail_session = create_session()  # 用独立会话访问邮箱 API
             code = wait_for_verification_code(mail_session, email, cf_token)
             if not code:
-                print("❌ 未收到验证码")
+                self._tagged_print("❌ 未收到验证码")
                 return False, email, password
 
             # ===== 步骤4：验证 OTP =====
@@ -1888,7 +1893,7 @@ def perform_codex_oauth_login_http(
                 verify=False,
                 timeout=30,
             )
-            print(f"  状态码: {resp.status_code}")
+            self._tagged_print(f"  状态码: {resp.status_code}")
             print(f"  最终URL: {resp.url[:120]}")
 
             if resp.status_code == 403:
@@ -2296,7 +2301,7 @@ def perform_codex_oauth_login_http(
                     json={"workspace_id": workspace_id},
                     headers=h_consent, verify=False, timeout=30, allow_redirects=False,
                 )
-                print(f"  状态码: {resp.status_code}")
+                self._tagged_print(f"  状态码: {resp.status_code}")
 
                 if resp.status_code in (301, 302, 303, 307, 308):
                     auth_code = _extract_code_from_url(resp.headers.get("Location", ""))
@@ -2342,7 +2347,7 @@ def perform_codex_oauth_login_http(
                                 json=body, headers=h_org,
                                 verify=False, timeout=30, allow_redirects=False,
                             )
-                            print(f"  状态码: {resp.status_code}")
+                            self._tagged_print(f"  状态码: {resp.status_code}")
 
                             if resp.status_code in (301, 302, 303, 307, 308):
                                 loc = resp.headers.get("Location", "")

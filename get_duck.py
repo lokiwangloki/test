@@ -13,6 +13,20 @@ DEFAULT_API_URL = "https://quack.duckduckgo.com/api/email/addresses"
 DEFAULT_STOP_COUNT = 3
 DEFAULT_DELAY = 0.5
 _POOL_LOCK = threading.Lock()
+_LOG_PREFIX = ""
+
+
+def set_duck_log_prefix(prefix: str = "") -> None:
+    global _LOG_PREFIX
+    _LOG_PREFIX = str(prefix or "")
+
+
+def _duck_log(message: str) -> None:
+    prefix = str(_LOG_PREFIX or "")
+    if prefix:
+        print(f"{prefix}{message}")
+    else:
+        print(message)
 
 
 def _repo_default_output_file() -> Path:
@@ -60,22 +74,24 @@ def _state_file(address_file: str | None = None) -> Path:
 def load_duck_state(address_file: str | None = None) -> dict:
     path = _state_file(address_file)
     if not path.exists():
-        return {"bearers": {}, "recent_api_addresses": {}}
+        return {"bearers": {}, "recent_api_addresses": {}, "active_bearer_index": 0}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {"bearers": {}, "recent_api_addresses": {}}
+        return {"bearers": {}, "recent_api_addresses": {}, "active_bearer_index": 0}
     if not isinstance(data, dict):
-        return {"bearers": {}, "recent_api_addresses": {}}
+        return {"bearers": {}, "recent_api_addresses": {}, "active_bearer_index": 0}
     bearers = data.get("bearers") if isinstance(data.get("bearers"), dict) else {}
     recent = data.get("recent_api_addresses") if isinstance(data.get("recent_api_addresses"), dict) else {}
-    return {"bearers": bearers, "recent_api_addresses": recent}
+    active_index = int(data.get("active_bearer_index") or 0)
+    return {"bearers": bearers, "recent_api_addresses": recent, "active_bearer_index": active_index}
 
 
 def save_duck_state(state: dict, address_file: str | None = None) -> None:
     payload = {
         "bearers": state.get("bearers") if isinstance(state.get("bearers"), dict) else {},
         "recent_api_addresses": state.get("recent_api_addresses") if isinstance(state.get("recent_api_addresses"), dict) else {},
+        "active_bearer_index": int(state.get("active_bearer_index") or 0),
     }
     path = _state_file(address_file)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -250,7 +266,7 @@ def _collect_duck_addresses_with_bearer(
     api_url: str,
     stop_count: int,
     delay_seconds: float,
-) -> list[str]:
+) -> tuple[list[str], int]:
     all_addresses: list[str] = []
     last_address = ""
     same_count = 0
@@ -266,12 +282,12 @@ def _collect_duck_addresses_with_bearer(
         data = response.json()
         current_address = str(data.get("address") or "").strip()
         if not current_address:
-            print("[!] 未获取到地址，跳过")
+            _duck_log("[!] 未获取到地址，跳过")
             time.sleep(delay_seconds)
             continue
 
         full_address = f"{current_address}@duck.com"
-        print(f"[+] 获取到：{full_address}")
+        _duck_log(f"[+] 获取到：{full_address}")
         all_addresses.append(full_address)
 
         if current_address == last_address:
@@ -280,9 +296,9 @@ def _collect_duck_addresses_with_bearer(
             same_count = 1
             last_address = current_address
 
-        print(f"ℹ️ 连续相同次数：{same_count}/{stop_count}")
+        _duck_log(f"ℹ️ 连续相同次数：{same_count}/{stop_count}")
         if same_count >= stop_count:
-            return all_addresses
+            return all_addresses, same_count
         time.sleep(delay_seconds)
 
 
@@ -305,18 +321,22 @@ def fetch_duck_addresses(
     state = load_duck_state(output_file)
     recent_api_addresses = state.get("recent_api_addresses") if isinstance(state.get("recent_api_addresses"), dict) else {}
     bearer_states = state.get("bearers") if isinstance(state.get("bearers"), dict) else {}
+    active_index = int(state.get("active_bearer_index") or 0) if isinstance(state, dict) else 0
+    if bearers:
+        active_index %= len(bearers)
     to_add: list[str] = []
     seen = set(existing_addresses)
     last_error: Exception | None = None
 
-    print("=== 开始自动获取 DuckDuckGo 邮箱地址（追加模式）===")
-    for index, token in enumerate(bearers, start=1):
+    _duck_log("=== 开始自动获取 DuckDuckGo 邮箱地址（追加模式）===")
+
+    ordered_indexes = list(range(active_index, len(bearers))) + list(range(0, active_index))
+    for index in ordered_indexes:
+        token = bearers[index]
         token_key = _bearer_state_key(token)
         bearer_state = bearer_states.get(token_key) if isinstance(bearer_states.get(token_key), dict) else {}
-        last_seen = str(bearer_state.get("last_seen") or "").strip().lower()
-        last_accepted = str(bearer_state.get("last_accepted") or "").strip().lower()
         try:
-            candidates = _collect_duck_addresses_with_bearer(
+            candidates, same_count = _collect_duck_addresses_with_bearer(
                 curl_requests,
                 bearer=token,
                 api_url=url,
@@ -325,38 +345,45 @@ def fetch_duck_addresses(
             )
         except Exception as exc:
             last_error = exc
-            print(f"[!] Duck bearer {index}/{len(bearers)} 获取失败: {exc}")
+            _duck_log(f"[!] Duck bearer {index + 1}/{len(bearers)} 获取失败: {exc}")
+            state["active_bearer_index"] = (index + 1) % len(bearers)
             continue
 
         accepted = False
         for item in candidates:
             normalized = item.strip().lower()
             bearer_state["last_seen"] = normalized
-            if normalized == last_seen or normalized == last_accepted:
-                print(f"[duckmail] 跳过 bearer 重复地址: {item}")
-                continue
             if normalized in recent_api_addresses:
-                print(f"[duckmail] 跳过近期已用地址: {item}")
+                _duck_log(f"[duckmail] 跳过近期已用地址: {item}")
                 continue
             if item in seen:
-                print(f"[duckmail] 跳过池内已存在地址: {item}")
+                _duck_log(f"[duckmail] 跳过池内已存在地址: {item}")
                 continue
             to_add.append(item)
             seen.add(item)
             bearer_state["last_accepted"] = normalized
             recent_api_addresses[normalized] = time.strftime("%Y-%m-%dT%H:%M:%S")
             accepted = True
+            state["active_bearer_index"] = index
             break
 
         bearer_states[token_key] = bearer_state
         if accepted:
+            if same_count >= stop_count:
+                state["active_bearer_index"] = (index + 1) % len(bearers)
+                _duck_log(f"[duckmail] 当前 bearer 连续重复 {same_count} 次，切换到下一个 bearer")
             break
+        if same_count >= stop_count:
+            state["active_bearer_index"] = (index + 1) % len(bearers)
+            _duck_log(f"[duckmail] 当前 bearer 连续重复 {same_count} 次，切换到下一个 bearer")
+            continue
 
     if not to_add and last_error is not None:
         raise RuntimeError(f"所有 Duck bearer 均不可用，已尝试 {len(bearers)} 个: {last_error}")
 
     state["bearers"] = bearer_states
     state["recent_api_addresses"] = recent_api_addresses
+    state["active_bearer_index"] = int(state.get("active_bearer_index") or 0)
     save_duck_state(state, output_file)
 
     if to_add:
@@ -365,10 +392,10 @@ def fetch_duck_addresses(
         with path.open("a", encoding="utf-8") as handle:
             handle.write("\n".join(to_add) + "\n")
 
-    print("\n==================== 完成 ====================")
-    print(f"本次新增：{len(to_add)} 个")
-    print(f"文件总共有：{len(existing_addresses) + len(to_add)} 个")
-    print(f"已安全追加到：{resolve_output_file(output_file)} ✅")
+    _duck_log("\n==================== 完成 ====================")
+    _duck_log(f"本次新增：{len(to_add)} 个")
+    _duck_log(f"文件总共有：{len(existing_addresses) + len(to_add)} 个")
+    _duck_log(f"已安全追加到：{resolve_output_file(output_file)} ✅")
     return to_add
 
 

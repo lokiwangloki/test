@@ -15,6 +15,20 @@ DEFAULT_FLOWS = [
     "password_verify",
     "oauth_create_account",
 ]
+_LOG_PREFIX = ""
+
+
+def set_browser_log_prefix(prefix: str = "") -> None:
+    global _LOG_PREFIX
+    _LOG_PREFIX = str(prefix or "")
+
+
+def _browser_log(message: str) -> None:
+    prefix = str(_LOG_PREFIX or "")
+    if prefix:
+        print(f"{prefix}{message}")
+    else:
+        print(message)
 
 SDK_URL = os.environ.get(
     "SDK_URL",
@@ -95,7 +109,7 @@ def get_all_sentinel_artifacts(flows=None, proxy=None, timeout_ms=60000, user_ag
             page.wait_for_timeout(8000)
             page.wait_for_function("() => !!window.SentinelSDK", timeout=30000)
             elapsed_load = time.time() - t_start
-            print(f"  [Browser] SentinelSDK 已加载 ({elapsed_load:.1f}s)")
+            _browser_log(f"  [Browser] SentinelSDK 已加载 ({elapsed_load:.1f}s)")
 
             result = page.evaluate(
                 """async (flows) => {
@@ -146,7 +160,7 @@ def get_all_sentinel_tokens(flows=None, proxy=None, timeout_ms=60000, user_agent
         dict: {flow_name: token_json_string, ...}，失败的 flow 值为 None
     """
     flows = _normalize_flow_list(flows)
-    print(f"  [Browser] 批量生成 sentinel token: {', '.join(flows)}")
+    _browser_log(f"  [Browser] 批量生成 sentinel token: {', '.join(flows)}")
     t_start = time.time()
 
     try:
@@ -158,7 +172,7 @@ def get_all_sentinel_tokens(flows=None, proxy=None, timeout_ms=60000, user_agent
         )
     except Exception as e:
         elapsed = time.time() - t_start
-        print(f"  [Browser] 异常 ({elapsed:.1f}s): {e}")
+        _browser_log(f"  [Browser] 异常 ({elapsed:.1f}s): {e}")
         return {f: None for f in flows}
 
     elapsed = time.time() - t_start
@@ -171,18 +185,18 @@ def get_all_sentinel_tokens(flows=None, proxy=None, timeout_ms=60000, user_agent
             try:
                 parsed = json.loads(token)
                 has_t = bool(parsed.get("t"))
-                print(
+                _browser_log(
                     f"  [Browser] {flow}: OK"
                     f" (t:{'Y' if has_t else 'N'}, so:{'Y' if bool(so_token) else 'N'})"
                 )
             except Exception:
-                print(f"  [Browser] {flow}: OK (len={len(token)}, so:{'Y' if bool(so_token) else 'N'})")
+                _browser_log(f"  [Browser] {flow}: OK (len={len(token)}, so:{'Y' if bool(so_token) else 'N'})")
             tokens[flow] = token
         else:
-            print(f"  [Browser] {flow}: FAIL")
+            _browser_log(f"  [Browser] {flow}: FAIL")
             tokens[flow] = None
 
-    print(f"  [Browser] 批量完成 ({elapsed:.1f}s)")
+    _browser_log(f"  [Browser] 批量完成 ({elapsed:.1f}s)")
     return tokens
 
 

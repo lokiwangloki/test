@@ -2080,15 +2080,22 @@ class ChatGPTRegister:
             raise Exception(f"DuckMail 创建邮箱失败: {e}")
 
     def create_duckmail_email(self):
+        self._print("[duckmail] 开始从地址池获取邮箱...")
         try:
             import get_duck
         except Exception as e:
             raise Exception(f"加载 get_duck.py 失败: {e}") from e
 
         try:
-            email = get_duck.ensure_duck_address_available(refill_attempts=3, stop_count=1, delay_seconds=0)
+            get_duck.set_duck_log_prefix(f"[{self.tag}] " if self.tag else "")
+            email = get_duck.ensure_duck_address_available(refill_attempts=3, stop_count=2, delay_seconds=0)
         except Exception as first_error:
             raise Exception(f"duck 邮箱地址池不可用: {first_error}") from first_error
+        finally:
+            try:
+                get_duck.set_duck_log_prefix("")
+            except Exception:
+                pass
 
         self._print(f"[duckmail] 创建邮箱成功: {email}")
         return email, "", email
