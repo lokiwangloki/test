@@ -2220,8 +2220,8 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertTrue(result.success)
-        self.assertIn("[duck] [仅注册] ✅注册成功", rendered)
-        self.assertIn("[duck] [Oauth获取token] ✅获取Token成功", rendered)
+        self.assertIn("[duck] ✅注册成功", rendered)
+        self.assertIn("[duck] ✅Oauth token 获取成功", rendered)
         self.assertNotIn("[duck] step0 visible", rendered)
         self.assertNotIn("[duck] oauth visible", rendered)
         self.assertNotIn("Token JSON 已保存到", rendered)

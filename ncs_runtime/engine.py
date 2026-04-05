@@ -1,7 +1,5 @@
 import io
-import os
 import re
-import sys
 import time
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
@@ -188,35 +186,15 @@ def _extract_stage_failure_reason(output: str, fallback: str = "") -> str:
 
 @contextmanager
 def _capture_stage_output(tag: str = "", stage: str = ""):
+    del tag, stage
     buffer = io.StringIO()
-
-    if str(os.getenv("GITHUB_ACTIONS", "")).strip() or str(os.getenv("CI", "")).strip():
-        summary = _StageSummaryWriter(tag=tag, stage=stage)
-
-        class _BufferOnly(io.TextIOBase):
-            def __init__(self, primary, summary_writer=None):
-                self._primary = primary
-                self._summary_writer = summary_writer
-
-            def write(self, data):
-                if self._summary_writer is not None:
-                    self._summary_writer.write(data)
-                return self._primary.write(data)
-
-            def flush(self):
-                if self._summary_writer is not None:
-                    self._summary_writer.flush()
-                self._primary.flush()
-
-        tee_stdout = _BufferOnly(buffer, summary)
-        tee_stderr = _BufferOnly(buffer, summary)
-        with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
-            yield buffer
-        summary.flush()
-        return
-
     with redirect_stdout(buffer), redirect_stderr(buffer):
         yield buffer
+
+
+def _print_account_line(tag: str, message: str) -> None:
+    with legacy._print_lock:
+        print(f"[{tag}] {message}")
 
 
 def _print_stage_status(tag: str, stage: str, ok: bool, success_text: str, failure_text: str, reason: str = "") -> None:
@@ -357,9 +335,9 @@ class RegistrationEngine:
             except Exception as error:
                 reason = _extract_stage_failure_reason(registration_output.getvalue(), str(error))
                 if stage_login_ready:
-                    with legacy._print_lock:
-                        print(f"[{account_tag}] ❌注册失败: {reason}")
-                _print_stage_status(account_tag, "仅注册", False, "注册成功", "注册失败", reason)
+                    _print_account_line(account_tag, f"❌注册失败: {reason}")
+                else:
+                    _print_account_line(account_tag, f"❌注册失败: {reason}")
                 return RegistrationResult(
                     idx=self.idx,
                     success=False,
@@ -369,7 +347,7 @@ class RegistrationEngine:
                     error_code=_extract_error_code(reason),
                 )
 
-            _print_stage_status(account_tag, "仅注册", True, "注册成功", "注册失败")
+            _print_account_line(account_tag, "✅注册成功")
 
             oauth_ok = True
             if legacy.ENABLE_OAUTH:
@@ -382,8 +360,6 @@ class RegistrationEngine:
                             if oauth_attempt == 0:
                                 time.sleep(5)
                             else:
-                                with legacy._print_lock:
-                                    print(f"[{account_tag}] [Oauth获取token] ⚠️首次失败，重试一次...")
                                 time.sleep(3)
                             tokens = perform_codex_oauth_login_http(
                                 mailbox.email, chatgpt_password,
@@ -400,7 +376,7 @@ class RegistrationEngine:
                 except Exception as error:
                     combined_output = "\n".join(log for log in oauth_logs if log)
                     reason = _extract_stage_failure_reason(combined_output, str(error))
-                    _print_stage_status(account_tag, "Oauth获取token", False, "获取Token成功", "获取失败", reason)
+                    _print_account_line(account_tag, f"❌Oauth token 获取失败: {reason}")
                     if legacy.OAUTH_REQUIRED:
                         return RegistrationResult(
                             idx=self.idx,
@@ -416,11 +392,11 @@ class RegistrationEngine:
                     if oauth_ok:
                         save_tokens(mailbox.email, tokens)
                         legacy._save_codex_tokens(mailbox.email, tokens)
-                        _print_stage_status(account_tag, "Oauth获取token", True, "获取Token成功", "获取失败")
+                        _print_account_line(account_tag, "✅Oauth token 获取成功")
                     else:
                         combined_output = "\n".join(log for log in oauth_logs if log)
                         reason = _extract_stage_failure_reason(combined_output, "OAuth Token 获取失败")
-                        _print_stage_status(account_tag, "Oauth获取token", False, "获取Token成功", "获取失败", reason)
+                        _print_account_line(account_tag, f"❌Oauth token 获取失败: {reason}")
                         if legacy.OAUTH_REQUIRED:
                             return RegistrationResult(
                                 idx=self.idx,
@@ -445,7 +421,7 @@ class RegistrationEngine:
             )
         except Exception as error:
             reason = _extract_stage_failure_reason("", str(error))
-            _print_stage_status(str(self.idx), "仅注册", False, "注册成功", "注册失败", reason)
+            _print_account_line(str(self.idx), f"❌注册失败: {reason}")
             return RegistrationResult(
                 idx=self.idx,
                 success=False,
