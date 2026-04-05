@@ -2038,6 +2038,85 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(fetch_args.kwargs["provider"], "tempmail_lol")
         self.assertIs(fetch_args.kwargs["otp_fetcher"], mailbox_service.wait_for_verification_code)
 
+    def test_registration_engine_streams_stage_logs_in_github_actions(self):
+        mailbox_service = mock.Mock()
+        mailbox_service.create_mailbox.return_value = ncs_register.MailboxSession(
+            email="duck@example.com",
+            password="",
+            token="duck-token",
+            provider="duckmail",
+        )
+        mailbox_service.wait_for_verification_code = mock.Mock(return_value="654321")
+
+        fake_protocol_keygen = types.ModuleType("protocol_keygen")
+
+        class FakeRegistrar:
+            def __init__(self, browser_tokens=None, tag=""):
+                self.browser_tokens = browser_tokens
+                self.tag = tag
+                self.session = mock.Mock()
+
+            def step0_init_oauth_session(self, email):
+                print(f"[{self.tag}] step0 visible")
+                return True
+
+            def step2_register_user(self, email, password):
+                print(f"[{self.tag}] step2 visible")
+                return True
+
+            def step3_send_otp(self):
+                print(f"[{self.tag}] otp send visible")
+                return True
+
+            def step4_validate_otp(self, code):
+                print(f"[{self.tag}] otp validate visible")
+                return True
+
+            def step5_create_account(self, first_name, last_name, birthdate):
+                print(f"[{self.tag}] account create visible")
+                return True
+
+        def fake_oauth(*args, **kwargs):
+            print(f"[{kwargs.get('tag')}] oauth visible")
+            return {"access_token": "token-xyz"}
+
+        fake_protocol_keygen.ProtocolRegistrar = FakeRegistrar
+        fake_protocol_keygen.create_session = mock.Mock()
+        fake_protocol_keygen.perform_codex_oauth_login_http = fake_oauth
+        fake_protocol_keygen.save_tokens = mock.Mock()
+        fake_protocol_keygen.save_account = mock.Mock()
+        fake_protocol_keygen.create_temp_email = mock.Mock()
+        fake_protocol_keygen.PROXY = ""
+        fake_protocol_keygen.COMMON_HEADERS = {"user-agent": "UA-123"}
+
+        fake_sentinel_browser = types.ModuleType("sentinel_browser")
+        fake_sentinel_browser.get_all_sentinel_tokens = mock.Mock(return_value={"authorize_continue": '{"token":"ok"}'})
+        fake_sentinel_browser.set_browser_log_prefix = mock.Mock()
+
+        output = io.StringIO()
+        with mock.patch.object(runtime_engine, "build_mailbox_service", return_value=mailbox_service):
+            with mock.patch.object(ncs_register_legacy, "ChatGPTRegister", return_value=mock.Mock(tag="")):
+                with mock.patch.dict(sys.modules, {
+                    "protocol_keygen": fake_protocol_keygen,
+                    "sentinel_browser": fake_sentinel_browser,
+                }):
+                    with mock.patch("ncs_register_legacy._save_codex_tokens"):
+                        with mock.patch("ncs_runtime.engine.time.sleep", return_value=None):
+                            with mock.patch.dict("os.environ", {"GITHUB_ACTIONS": "true"}, clear=False):
+                                with mock.patch("sys.stdout", new=output):
+                                    engine = runtime_engine.RegistrationEngine(idx=1, total=1, proxy=None, output_file="out.txt")
+                                    with mock.patch.object(engine, "_append_result"):
+                                        result = engine.run()
+
+        rendered = output.getvalue()
+        self.assertTrue(result.success)
+        self.assertIn("[duck] step0 visible", rendered)
+        self.assertIn("[duck] step2 visible", rendered)
+        self.assertIn("[duck] otp send visible", rendered)
+        self.assertIn("[duck] otp validate visible", rendered)
+        self.assertIn("[duck] account create visible", rendered)
+        self.assertIn("[duck] oauth visible", rendered)
+
     def test_registration_engine_retries_oauth_once_after_first_failure(self):
         mailbox_service = mock.Mock()
         mailbox_service.create_mailbox.return_value = ncs_register.MailboxSession(
