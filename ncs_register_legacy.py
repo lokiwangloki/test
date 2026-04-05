@@ -2017,6 +2017,7 @@ class ChatGPTRegister:
         self._cfmail_account_name = ""
         self._cfmail_mail_token = ""
         self._wildmail_api_base = ""
+        self._preset_duck_address = ""
 
     def _log(self, step, method, url, status, body=None):
         prefix = f"[{self.tag}] " if self.tag else ""
@@ -2080,6 +2081,12 @@ class ChatGPTRegister:
             raise Exception(f"DuckMail 创建邮箱失败: {e}")
 
     def create_duckmail_email(self):
+        preset = str(self._preset_duck_address or "").strip().lower()
+        if preset:
+            self._print(f"[duckmail] 使用预取地址: {preset}")
+            self._preset_duck_address = ""
+            return preset, "", preset
+
         self._print("[duckmail] 开始从地址池获取邮箱...")
         try:
             import get_duck
@@ -2088,7 +2095,7 @@ class ChatGPTRegister:
 
         try:
             get_duck.set_duck_log_prefix(f"[{self.tag}] " if self.tag else "")
-            email = get_duck.ensure_duck_address_available(refill_attempts=3, stop_count=2, delay_seconds=0)
+            email = get_duck.take_duck_address()
         except Exception as first_error:
             raise Exception(f"duck 邮箱地址池不可用: {first_error}") from first_error
         finally:

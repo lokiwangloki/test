@@ -23,8 +23,8 @@ def _cfmail_active_domain_target() -> int:
         return 3
 
 
-def run_single(idx: int, total: int, proxy: str, output_file: str):
-    result = RegistrationEngine(idx=idx, total=total, proxy=proxy, output_file=output_file).run()
+def run_single(idx: int, total: int, proxy: str, output_file: str, mailbox_email: str = ""):
+    result = RegistrationEngine(idx=idx, total=total, proxy=proxy, output_file=output_file, mailbox_email=mailbox_email).run()
     return result.success, result.email or None, result.error_code or "", result.error_message or None
 
 
@@ -94,6 +94,30 @@ def _is_duck_pool_exhausted(error_message: str) -> bool:
     return _DUCK_POOL_EMPTY_MARKER in str(error_message or "")
 
 
+def _produce_duck_addresses_until_exhausted(
+    *,
+    stop_count: int = 2,
+    delay_seconds: float = 0,
+) -> tuple[int, str | None]:
+    import get_duck
+
+    produced = 0
+    last_error: str | None = None
+    while True:
+        try:
+            get_duck.produce_one_duck_address(
+                stop_count=stop_count,
+                delay_seconds=delay_seconds,
+            )
+            produced += 1
+        except Exception as error:
+            last_error = str(error)
+            with legacy._print_lock:
+                print(f"[duckmail] 生产者停止: {last_error}")
+            break
+    return produced, last_error
+
+
 def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.txt",
               max_workers: int = 3, proxy: str = None, cpa_cleanup=None,
               cpa_upload_every_n: int = 1):
@@ -109,6 +133,9 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
         return False
 
     actual_workers = min(max_workers, total_accounts)
+    duckmail_mode = provider == "duckmail"
+    if duckmail_mode:
+        actual_workers = min(actual_workers, 5)
     print(f"\n{'#' * 60}")
     print("  ChatGPT 批量自动注册")
     print(f"  注册数量: {total_accounts} | 并发数: {actual_workers}")
@@ -253,29 +280,95 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
     upload_every_n = max(1, int(cpa_upload_every_n or 1))
     since_last_upload = 0
 
+    duck_poll_min = max(5, int(getattr(legacy, "TASK_LAUNCH_INTERVAL_MIN_SECONDS", 5) or 5))
+    duck_poll_max = max(
+        duck_poll_min,
+        int(getattr(legacy, "TASK_LAUNCH_INTERVAL_MAX_SECONDS", duck_poll_min) or duck_poll_min),
+    )
+    producer_done = threading.Event()
+    producer_summary = {"produced": 0, "error": None}
+
+    producer_thread = None
+    if duckmail_mode:
+        def _duck_producer_main() -> None:
+            produced, last_error = _produce_duck_addresses_until_exhausted(
+                stop_count=2,
+                delay_seconds=0,
+            )
+            producer_summary["produced"] = produced
+            producer_summary["error"] = last_error
+            producer_done.set()
+
+        producer_thread = threading.Thread(target=_duck_producer_main, daemon=True)
+        producer_thread.start()
+        with legacy._print_lock:
+            print(f"[duckmail] 已启动独立生产者，消费者轮询间隔 {duck_poll_min}-{duck_poll_max} 秒")
+
     legacy._render_apt_like_progress(completed_count, total_accounts, success_count, fail_count, start_time)
 
     with ThreadPoolExecutor(max_workers=actual_workers) as executor:
         pending_indexes = list(range(1, total_accounts + 1))
         active_futures = {}
+        duck_stop_launch = False
+        empty_reads = 0
+        empty_reads_after_stop = 0
 
         while pending_indexes or active_futures:
-            while pending_indexes and len(active_futures) < actual_workers:
-                idx = pending_indexes.pop(0)
-                future = executor.submit(run_single, idx, total_accounts, proxy, output_file)
-                active_futures[future] = idx
-                if legacy.BATCH_MODE == "pipeline" and pending_indexes:
-                    time.sleep(legacy.random.uniform(
-                        legacy.TASK_LAUNCH_INTERVAL_MIN_SECONDS,
-                        legacy.TASK_LAUNCH_INTERVAL_MAX_SECONDS,
-                    ))
+            if duckmail_mode:
+                import get_duck
+
+                while not duck_stop_launch and pending_indexes and len(active_futures) < actual_workers:
+                    mailbox_email = get_duck.try_take_duck_address()
+                    if not mailbox_email:
+                        empty_reads += 1
+                        if producer_done.is_set():
+                            empty_reads_after_stop += 1
+                        else:
+                            empty_reads_after_stop = 0
+                        if producer_done.is_set() and empty_reads_after_stop >= 3:
+                            duck_stop_launch = True
+                            with legacy._print_lock:
+                                print("[duckmail] 地址池连续空读 3 次，消费者退出")
+                            break
+                        delay = legacy.random.uniform(duck_poll_min, duck_poll_max)
+                        producer_state = "生产者运行中" if not producer_done.is_set() else "生产者已停止"
+                        current_empty = empty_reads_after_stop if producer_done.is_set() else empty_reads
+                        with legacy._print_lock:
+                            print(f"[duckmail] 地址池为空，第 {current_empty}/3 次空读（{producer_state}），{delay:.1f} 秒后重试")
+                        time.sleep(delay)
+                        break
+
+                    empty_reads = 0
+                    empty_reads_after_stop = 0
+                    idx = pending_indexes.pop(0)
+                    future = executor.submit(run_single, idx, total_accounts, proxy, output_file, mailbox_email)
+                    active_futures[future] = (idx, mailbox_email)
+                    with legacy._print_lock:
+                        print(f"[duckmail] 投放地址: {mailbox_email}")
+                    if pending_indexes and len(active_futures) < actual_workers:
+                        time.sleep(legacy.random.uniform(duck_poll_min, duck_poll_max))
+            else:
+                while pending_indexes and len(active_futures) < actual_workers:
+                    idx = pending_indexes.pop(0)
+                    future = executor.submit(run_single, idx, total_accounts, proxy, output_file)
+                    active_futures[future] = (idx, "")
+                    if legacy.BATCH_MODE == "pipeline" and pending_indexes:
+                        time.sleep(legacy.random.uniform(
+                            legacy.TASK_LAUNCH_INTERVAL_MIN_SECONDS,
+                            legacy.TASK_LAUNCH_INTERVAL_MAX_SECONDS,
+                        ))
+
+            if not active_futures:
+                if duckmail_mode and not duck_stop_launch:
+                    continue
+                break
 
             done, _ = wait(list(active_futures.keys()), return_when=FIRST_COMPLETED)
             for future in done:
-                idx = active_futures.pop(future)
+                idx, reserved_email = active_futures.pop(future)
                 try:
                     ok, email, error_code, err = future.result()
-                    account_label = str(email or idx)
+                    account_label = str(email or reserved_email or idx)
                     if ok:
                         success_count += 1
                         with legacy._print_lock:
@@ -293,6 +386,7 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                             print(f"[{account_label}] [结果] ❌失败{detail}")
                         if _is_duck_pool_exhausted(err):
                             pending_indexes.clear()
+                            duck_stop_launch = True
                             with legacy._print_lock:
                                 print("[duckmail] 地址池补充重试 3 次后仍为空，停止投放新任务，等待已启动任务完成")
                         del error_code
@@ -300,7 +394,7 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                 except Exception as error:
                     fail_count += 1
                     with legacy._print_lock:
-                        print(f"[{idx}] [结果] ❌失败: 线程异常: {error}")
+                        print(f"[{reserved_email or idx}] [结果] ❌失败: 线程异常: {error}")
                     _record_failure_and_maybe_rotate()
                 finally:
                     completed_count += 1
@@ -308,8 +402,23 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                         completed_count, total_accounts, success_count, fail_count, start_time
                     )
 
+    if duckmail_mode and producer_thread is not None:
+        producer_thread.join()
+
     with legacy._print_lock:
         print()
+
+    batch_completed = completed_count >= total_accounts if total_accounts else True
+    if duckmail_mode and pending_indexes:
+        with legacy._print_lock:
+            print(f"[duckmail] 仍有 {len(pending_indexes)} 个账号未被投放，本轮按失败处理")
+        batch_completed = False
+
+    if duckmail_mode:
+        with legacy._print_lock:
+            print(f"[duckmail] 生产者累计追加: {producer_summary['produced']} 个")
+            if producer_summary["error"]:
+                print(f"[duckmail] 生产者结束原因: {producer_summary['error']}")
 
     elapsed = time.time() - start_time
     avg = elapsed / total_accounts if total_accounts else 0
@@ -324,4 +433,4 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
     if success_count > 0 and legacy.UPLOAD_API_URL and since_last_upload > 0:
         _run_cpa_upload_with_compact_log()
 
-    return success_count > 0
+    return batch_completed and success_count > 0

@@ -1822,6 +1822,7 @@ def perform_codex_oauth_login_http(
     cf_token=None,
     otp_fetcher=None,
     provider="",
+    tag="",
 ):
     """
     纯 HTTP 方式执行 Codex OAuth 登录获取 Token（零浏览器）。
@@ -1846,6 +1847,10 @@ def perform_codex_oauth_login_http(
     print("\n🔐 执行 Codex OAuth 登录（纯 HTTP 模式）...")
     if provider:
         print(f"  邮箱提供商: {provider}")
+
+    def _tagged_print(message: str) -> None:
+        prefix = f"[{tag}] " if tag else ""
+        print(f"{prefix}{message}")
 
     session = create_session()
     device_id = generate_device_id()
@@ -1893,7 +1898,7 @@ def perform_codex_oauth_login_http(
                 verify=False,
                 timeout=30,
             )
-            self._tagged_print(f"  状态码: {resp.status_code}")
+            _tagged_print(f"  状态码: {resp.status_code}")
             print(f"  最终URL: {resp.url[:120]}")
 
             if resp.status_code == 403:
@@ -2301,7 +2306,7 @@ def perform_codex_oauth_login_http(
                     json={"workspace_id": workspace_id},
                     headers=h_consent, verify=False, timeout=30, allow_redirects=False,
                 )
-                self._tagged_print(f"  状态码: {resp.status_code}")
+                _tagged_print(f"  状态码: {resp.status_code}")
 
                 if resp.status_code in (301, 302, 303, 307, 308):
                     auth_code = _extract_code_from_url(resp.headers.get("Location", ""))
@@ -2347,7 +2352,7 @@ def perform_codex_oauth_login_http(
                                 json=body, headers=h_org,
                                 verify=False, timeout=30, allow_redirects=False,
                             )
-                            self._tagged_print(f"  状态码: {resp.status_code}")
+                            _tagged_print(f"  状态码: {resp.status_code}")
 
                             if resp.status_code in (301, 302, 303, 307, 308):
                                 loc = resp.headers.get("Location", "")

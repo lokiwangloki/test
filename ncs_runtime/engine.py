@@ -156,11 +156,12 @@ class RegistrationResult:
 class RegistrationEngine:
     """Single-account registration engine using protocol_keygen (codex oauth loop)."""
 
-    def __init__(self, idx: int, total: int, proxy: Optional[str], output_file: str):
+    def __init__(self, idx: int, total: int, proxy: Optional[str], output_file: str, mailbox_email: str = ""):
         self.idx = idx
         self.total = total
         self.proxy = proxy
         self.output_file = output_file
+        self.mailbox_email = str(mailbox_email or "").strip().lower()
 
     def _append_result(self, mailbox, chatgpt_password: str, oauth_ok: bool) -> None:
         with legacy._file_lock:
@@ -194,6 +195,8 @@ class RegistrationEngine:
         _email_on_failure = ""
         try:
             register_client = legacy.ChatGPTRegister(proxy=self.proxy, tag=f"{self.idx}")
+            if provider == "duckmail" and self.mailbox_email:
+                register_client._preset_duck_address = self.mailbox_email
             mailbox_service, mailbox, effective_provider = self._create_mailbox_with_fallback(
                 register_client, provider
             )
@@ -210,7 +213,13 @@ class RegistrationEngine:
                 ProtocolRegistrar, create_session, perform_codex_oauth_login_http,
                 save_tokens, save_account, create_temp_email, PROXY, COMMON_HEADERS,
             )
-            from sentinel_browser import get_all_sentinel_tokens, set_browser_log_prefix
+            try:
+                from sentinel_browser import get_all_sentinel_tokens, set_browser_log_prefix
+            except ImportError:
+                from sentinel_browser import get_all_sentinel_tokens
+
+                def set_browser_log_prefix(prefix: str = "") -> None:
+                    del prefix
 
             registration_otp_fetcher = lambda timeout: mailbox_service.wait_for_verification_code(timeout, stage="register")
             oauth_otp_fetcher = lambda timeout: mailbox_service.wait_for_verification_code(timeout, stage="oauth")
@@ -287,6 +296,7 @@ class RegistrationEngine:
                                 cf_token=mailbox.token,
                                 otp_fetcher=oauth_otp_fetcher,
                                 provider=effective_provider,
+                                tag=account_tag,
                             )
                         oauth_logs.append(oauth_output.getvalue())
                         if tokens and tokens.get("access_token"):

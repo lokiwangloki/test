@@ -12,17 +12,16 @@ from pathlib import Path
 DEFAULT_API_URL = "https://quack.duckduckgo.com/api/email/addresses"
 DEFAULT_STOP_COUNT = 3
 DEFAULT_DELAY = 0.5
-_POOL_LOCK = threading.Lock()
-_LOG_PREFIX = ""
+_POOL_LOCK = threading.RLock()
+_LOG_CONTEXT = threading.local()
 
 
 def set_duck_log_prefix(prefix: str = "") -> None:
-    global _LOG_PREFIX
-    _LOG_PREFIX = str(prefix or "")
+    _LOG_CONTEXT.prefix = str(prefix or "")
 
 
 def _duck_log(message: str) -> None:
-    prefix = str(_LOG_PREFIX or "")
+    prefix = str(getattr(_LOG_CONTEXT, "prefix", "") or "")
     if prefix:
         print(f"{prefix}{message}")
     else:
@@ -53,6 +52,32 @@ def resolve_output_file(output_file: str | None = None) -> Path:
         if candidate.exists():
             return candidate
     return repo_file
+
+
+def append_duck_address(address: str, address_file: str | None = None) -> bool:
+    normalized = str(address or "").strip().lower()
+    if not normalized or not normalized.endswith("@duck.com"):
+        return False
+
+    with _POOL_LOCK:
+        existing = load_duck_addresses(address_file)
+        state = load_duck_state(address_file)
+        recent = state.get("recent_api_addresses") if isinstance(state.get("recent_api_addresses"), dict) else {}
+        if normalized in recent:
+            _duck_log(f"[duckmail] 跳过近期已用地址: {address}")
+            return False
+        if normalized in {item.strip().lower() for item in existing}:
+            _duck_log(f"[duckmail] 跳过池内已存在地址: {address}")
+            return False
+        path = resolve_output_file(address_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{normalized}\n")
+        recent[normalized] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        state["recent_api_addresses"] = recent
+        save_duck_state(state, address_file)
+        _duck_log(f"[duckmail] 已追加新地址: {normalized}")
+        return True
 
 
 def load_duck_addresses(address_file: str | None = None) -> list[str]:
@@ -111,14 +136,26 @@ def _write_duck_addresses(addresses: list[str], address_file: str | None = None)
     return path
 
 
-def take_duck_address(address_file: str | None = None) -> str:
+def try_take_duck_address(address_file: str | None = None) -> str | None:
     with _POOL_LOCK:
         addresses = load_duck_addresses(address_file)
         if not addresses:
-            raise RuntimeError("duckaddress.txt 中没有可用的 duck 邮箱")
+            return None
         chosen = addresses[0]
         _write_duck_addresses(addresses[1:], address_file)
+        state = load_duck_state(address_file)
+        recent = state.get("recent_api_addresses") if isinstance(state.get("recent_api_addresses"), dict) else {}
+        recent[str(chosen).strip().lower()] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        state["recent_api_addresses"] = recent
+        save_duck_state(state, address_file)
         return chosen
+
+
+def take_duck_address(address_file: str | None = None) -> str:
+    chosen = try_take_duck_address(address_file)
+    if not chosen:
+        raise RuntimeError("duckaddress.txt 中没有可用的 duck 邮箱")
+    return chosen
 
 
 def ensure_duck_address_available(
@@ -300,6 +337,121 @@ def _collect_duck_addresses_with_bearer(
         if same_count >= stop_count:
             return all_addresses, same_count
         time.sleep(delay_seconds)
+
+
+def produce_one_duck_address(
+    address_file: str | None = None,
+    *,
+    bearer: str | list[str] | tuple[str, ...] | None = None,
+    api_url: str | None = None,
+    stop_count: int = 2,
+    delay_seconds: float = 0,
+) -> str | None:
+    from curl_cffi import requests as curl_requests
+
+    bearers = load_duck_bearers(bearer)
+    if not bearers:
+        raise RuntimeError("DUCK_EMAIL_BEARERS / DUCK_EMAIL_BEARER 未设置，无法生成 duck 邮箱池")
+
+    url = str(api_url or os.environ.get("DUCK_EMAIL_API_URL", DEFAULT_API_URL)).strip() or DEFAULT_API_URL
+
+    with _POOL_LOCK:
+        state = load_duck_state(address_file)
+        active_index = int(state.get("active_bearer_index") or 0) % len(bearers)
+
+    ordered_indexes = list(range(active_index, len(bearers))) + list(range(0, active_index))
+    last_error: Exception | None = None
+
+    for index in ordered_indexes:
+        token = bearers[index]
+        token_key = _bearer_state_key(token)
+        with _POOL_LOCK:
+            state = load_duck_state(address_file)
+            bearer_states = state.get("bearers") if isinstance(state.get("bearers"), dict) else {}
+            bearer_state = dict(bearer_states.get(token_key) if isinstance(bearer_states.get(token_key), dict) else {})
+            last_seen = str(bearer_state.get("last_seen") or "").strip().lower()
+            repeat_count = int(bearer_state.get("repeat_count") or 0)
+
+        try:
+            response = curl_requests.post(
+                url,
+                headers=_duck_headers(token),
+                timeout=10,
+                impersonate="chrome",
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            last_error = exc
+            _duck_log(f"[!] Duck bearer {index + 1}/{len(bearers)} 获取失败: {exc}")
+            with _POOL_LOCK:
+                state = load_duck_state(address_file)
+                state["active_bearer_index"] = (index + 1) % len(bearers)
+                save_duck_state(state, address_file)
+            continue
+
+        current_address = str(data.get("address") or "").strip()
+        if not current_address:
+            _duck_log("[!] 未获取到地址，跳过")
+            with _POOL_LOCK:
+                state = load_duck_state(address_file)
+                state["active_bearer_index"] = index
+                save_duck_state(state, address_file)
+            continue
+
+        full_address = f"{current_address}@duck.com"
+        _duck_log(f"[+] 获取到：{full_address}")
+
+        if current_address == last_seen.replace("@duck.com", ""):
+            repeat_count += 1
+        else:
+            repeat_count = 1
+        _duck_log(f"ℹ️ 连续相同次数：{repeat_count}/{stop_count}")
+
+        with _POOL_LOCK:
+            state = load_duck_state(address_file)
+            recent_api_addresses = state.get("recent_api_addresses") if isinstance(state.get("recent_api_addresses"), dict) else {}
+            bearer_states = state.get("bearers") if isinstance(state.get("bearers"), dict) else {}
+            bearer_state = dict(bearer_states.get(token_key) if isinstance(bearer_states.get(token_key), dict) else {})
+            bearer_state["last_seen"] = full_address.lower()
+            bearer_state["repeat_count"] = repeat_count
+
+            existing_addresses = {item.strip().lower() for item in load_duck_addresses(address_file)}
+            if full_address.lower() in recent_api_addresses:
+                _duck_log(f"[duckmail] 跳过近期已用地址: {full_address}")
+            elif full_address.lower() in existing_addresses:
+                _duck_log(f"[duckmail] 跳过池内已存在地址: {full_address}")
+            else:
+                append_duck_address(full_address, address_file=address_file)
+                recent_api_addresses[full_address.lower()] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                bearer_state["last_accepted"] = full_address.lower()
+                bearer_states[token_key] = bearer_state
+                state["bearers"] = bearer_states
+                state["recent_api_addresses"] = recent_api_addresses
+                if repeat_count >= stop_count:
+                    state["active_bearer_index"] = (index + 1) % len(bearers)
+                    _duck_log(f"[duckmail] 当前 bearer 连续重复 {repeat_count} 次，切换到下一个 bearer")
+                else:
+                    state["active_bearer_index"] = index
+                save_duck_state(state, address_file)
+                return full_address
+
+            bearer_states[token_key] = bearer_state
+            state["bearers"] = bearer_states
+            state["recent_api_addresses"] = recent_api_addresses
+            if repeat_count >= stop_count:
+                state["active_bearer_index"] = (index + 1) % len(bearers)
+                _duck_log(f"[duckmail] 当前 bearer 连续重复 {repeat_count} 次，切换到下一个 bearer")
+            else:
+                state["active_bearer_index"] = index
+            save_duck_state(state, address_file)
+
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+
+    if last_error is not None:
+        raise RuntimeError(f"所有 Duck bearer 均不可用，已尝试 {len(bearers)} 个: {last_error}")
+    raise RuntimeError("所有 Duck bearer 当前仅返回已消费/重复地址")
 
 
 def fetch_duck_addresses(

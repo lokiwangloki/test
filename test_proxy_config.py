@@ -421,9 +421,9 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         sleep_mock.assert_not_called()
 
-    def test_scheduler_workflow_uses_staggered_cron(self):
+    def test_scheduler_workflow_uses_two_hour_cron(self):
         workflow = Path(".github/workflows/scheduler.yml").read_text(encoding="utf-8")
-        self.assertIn("cron: '3,33 * * * *'", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
 
     def test_auto_scheduler_retries_transient_auth_files_dns_error(self):
         class FakeResponse:
@@ -533,17 +533,17 @@ class ProxyNormalizationTests(unittest.TestCase):
             ncs_register_legacy.DuckMailMailboxService,
         )
 
-    def test_duckmail_service_creates_mailbox_from_duck_address_file(self):
-        register_client = mock.Mock()
-        register_client.create_duckmail_email.return_value = ("poem-jarring-curve@duck.com", "", "poem-jarring-curve@duck.com")
+    def test_create_duckmail_email_uses_preset_address(self):
+        register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)
+        register.tag = "tag-1"
+        register._preset_duck_address = "preset@duck.com"
+        register._print = mock.Mock()
 
-        service = email_services.DuckMailMailboxService(register_client)
-        mailbox = service.create_mailbox()
+        email, password, token = ncs_register_legacy.ChatGPTRegister.create_duckmail_email(register)
 
-        self.assertEqual(mailbox.email, "poem-jarring-curve@duck.com")
-        self.assertEqual(mailbox.token, "poem-jarring-curve@duck.com")
-        self.assertEqual(mailbox.provider, "duckmail")
-        register_client.create_duckmail_email.assert_called_once()
+        self.assertEqual((email, password, token), ("preset@duck.com", "", "preset@duck.com"))
+        register._print.assert_called_once_with("[duckmail] 使用预取地址: preset@duck.com")
+        self.assertEqual(register._preset_duck_address, "")
 
     def test_take_duck_address_consumes_first_address_from_pool_file(self):
         pool_file = Path("/tmp/test_duckaddress_pool.txt")
@@ -581,7 +581,29 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(state["bearers"]["token-hash"]["last_seen"], "beta@duck.com")
         self.assertIn("beta@duck.com", state["recent_api_addresses"])
 
-    def test_remove_duck_addresses_deletes_uploaded_addresses_from_pool(self):
+    def test_append_duck_address_skips_recent_and_duplicates(self):
+        pool_file = Path("/tmp/test_duck_append_pool.txt")
+        pool_file.write_text("alpha@duck.com\n", encoding="utf-8")
+        state_file = pool_file.with_name("duck_state.json")
+        state_file.write_text(
+            json.dumps({"bearers": {}, "recent_api_addresses": {"beta@duck.com": "2026-04-05T00:00:00"}, "active_bearer_index": 0}),
+            encoding="utf-8",
+        )
+
+        try:
+            added_recent = get_duck.append_duck_address("beta@duck.com", address_file=str(pool_file))
+            added_dup = get_duck.append_duck_address("alpha@duck.com", address_file=str(pool_file))
+            added_new = get_duck.append_duck_address("gamma@duck.com", address_file=str(pool_file))
+            saved = pool_file.read_text(encoding="utf-8")
+        finally:
+            pool_file.unlink(missing_ok=True)
+            state_file.unlink(missing_ok=True)
+
+        self.assertFalse(added_recent)
+        self.assertFalse(added_dup)
+        self.assertTrue(added_new)
+        self.assertEqual(saved, "alpha@duck.com\ngamma@duck.com\n")
+
         pool_file = Path("/tmp/test_duckaddress_remove_pool.txt")
         pool_file.write_text(
             "alpha@duck.com\nbeta@duck.com\ngamma@duck.com\n",
@@ -1387,6 +1409,292 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIn("[ok@example.com] [结果] ✅成功", rendered)
         self.assertIn("[bad@example.com] [结果] ❌失败: OAuth Token 获取失败", rendered)
 
+    def test_run_batch_duckmail_consumes_prefetched_addresses_without_refill_coupling(self):
+        output = io.StringIO()
+        submitted_mailboxes = []
+
+        class FakeFuture:
+            def __init__(self, result):
+                self._result = result
+
+            def result(self):
+                return self._result
+
+        class FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                del args, kwargs
+                self._results = [
+                    FakeFuture((True, "first@duck.com", "", None)),
+                    FakeFuture((True, "second@duck.com", "", None)),
+                ]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                del fn, kwargs
+                submitted_mailboxes.append(args[4])
+                return self._results.pop(0)
+
+        class ImmediateThread:
+            def __init__(self, *args, target=None, daemon=None, **kwargs):
+                del args, daemon, kwargs
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+            def join(self, timeout=None):
+                del timeout
+                return None
+
+        with mock.patch.object(ncs_register_legacy, "MAIL_PROVIDER", "duckmail"):
+            with mock.patch.object(ncs_register_legacy, "UPLOAD_API_URL", ""):
+                with mock.patch.object(runtime_batch, "ThreadPoolExecutor", FakeExecutor):
+                    with mock.patch.object(runtime_batch, "wait", side_effect=lambda futures, return_when=None: (set(futures), set())):
+                        with mock.patch.object(runtime_batch.threading, "Thread", ImmediateThread):
+                            with mock.patch.object(runtime_batch, "_produce_duck_addresses_until_exhausted", return_value=(2, "done")):
+                                with mock.patch("get_duck.try_take_duck_address", side_effect=["first@duck.com", "second@duck.com", None, None, None]):
+                                    with mock.patch("get_duck.ensure_duck_address_available", side_effect=AssertionError("should not refill from consumer")):
+                                        with mock.patch.object(ncs_register_legacy.random, "uniform", return_value=0):
+                                            with mock.patch("time.sleep", return_value=None):
+                                                with mock.patch("sys.stdout", new=output):
+                                                    ok = runtime_batch.run_batch(total_accounts=5, max_workers=2)
+
+        rendered = output.getvalue()
+        self.assertFalse(ok)
+        self.assertEqual(submitted_mailboxes, ["first@duck.com", "second@duck.com"])
+        self.assertIn("已启动独立生产者", rendered)
+        self.assertIn("地址池连续空读 3 次，消费者退出", rendered)
+        self.assertIn("生产者累计追加: 2 个", rendered)
+
+    def test_run_batch_duckmail_joins_producer_before_summary(self):
+        output = io.StringIO()
+        threads = []
+
+        class FakeFuture:
+            def __init__(self, result):
+                self._result = result
+
+            def result(self):
+                return self._result
+
+        class FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                del args, kwargs
+                self._results = [FakeFuture((True, "one@duck.com", "", None))]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                del fn, args, kwargs
+                return self._results.pop(0)
+
+        class DeferredProducerThread:
+            def __init__(self, *args, target=None, daemon=None, **kwargs):
+                del args, daemon, kwargs
+                self._target = target
+                self.join_called = False
+                threads.append(self)
+
+            def start(self):
+                return None
+
+            def join(self, timeout=None):
+                del timeout
+                self.join_called = True
+                if self._target is not None:
+                    self._target()
+
+        with mock.patch.object(ncs_register_legacy, "MAIL_PROVIDER", "duckmail"):
+            with mock.patch.object(ncs_register_legacy, "UPLOAD_API_URL", ""):
+                with mock.patch.object(runtime_batch, "ThreadPoolExecutor", FakeExecutor):
+                    with mock.patch.object(runtime_batch, "wait", side_effect=lambda futures, return_when=None: (set(futures), set())):
+                        with mock.patch.object(runtime_batch.threading, "Thread", DeferredProducerThread):
+                            with mock.patch.object(runtime_batch, "_produce_duck_addresses_until_exhausted", return_value=(7, "done")):
+                                with mock.patch("get_duck.try_take_duck_address", side_effect=["one@duck.com", None, None, None]):
+                                    with mock.patch.object(ncs_register_legacy.random, "uniform", return_value=0):
+                                        with mock.patch("time.sleep", return_value=None):
+                                            with mock.patch("sys.stdout", new=output):
+                                                runtime_batch.run_batch(total_accounts=1, max_workers=1)
+
+        rendered = output.getvalue()
+        self.assertTrue(threads[0].join_called)
+        self.assertIn("生产者累计追加: 7 个", rendered)
+
+    def test_run_batch_duckmail_caps_consumers_at_five(self):
+        executor_workers = []
+
+        class FakeFuture:
+            def __init__(self, result):
+                self._result = result
+
+            def result(self):
+                return self._result
+
+        class FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                executor_workers.append(kwargs.get("max_workers"))
+                self._results = [FakeFuture((True, "one@duck.com", "", None))]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                del fn, args, kwargs
+                return self._results.pop(0)
+
+        class ImmediateThread:
+            def __init__(self, *args, target=None, daemon=None, **kwargs):
+                del args, daemon, kwargs
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+            def join(self, timeout=None):
+                del timeout
+                return None
+
+        with mock.patch.object(ncs_register_legacy, "MAIL_PROVIDER", "duckmail"):
+            with mock.patch.object(ncs_register_legacy, "UPLOAD_API_URL", ""):
+                with mock.patch.object(runtime_batch, "ThreadPoolExecutor", FakeExecutor):
+                    with mock.patch.object(runtime_batch, "wait", side_effect=lambda futures, return_when=None: (set(futures), set())):
+                        with mock.patch.object(runtime_batch.threading, "Thread", ImmediateThread):
+                            with mock.patch.object(runtime_batch, "_produce_duck_addresses_until_exhausted", return_value=(1, "done")):
+                                with mock.patch("get_duck.try_take_duck_address", side_effect=["one@duck.com", None, None, None]):
+                                    with mock.patch.object(ncs_register_legacy.random, "uniform", return_value=0):
+                                        with mock.patch("time.sleep", return_value=None):
+                                            runtime_batch.run_batch(total_accounts=8, max_workers=8)
+
+        self.assertEqual(executor_workers, [5])
+
+    def test_run_batch_duckmail_waits_for_three_empty_reads_after_producer_stops(self):
+        output = io.StringIO()
+        threads = []
+        calls = []
+
+        class FakeFuture:
+            def __init__(self, result):
+                self._result = result
+
+            def result(self):
+                return self._result
+
+        class FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                del args, kwargs
+                self._results = [FakeFuture((True, "one@duck.com", "", None))]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                del fn, args, kwargs
+                return self._results.pop(0)
+
+        class ControlledProducerThread:
+            def __init__(self, *args, target=None, daemon=None, **kwargs):
+                del args, daemon, kwargs
+                self._target = target
+                threads.append(self)
+
+            def start(self):
+                return None
+
+            def join(self, timeout=None):
+                del timeout
+                return None
+
+        def fake_take():
+            calls.append("poll")
+            if len(calls) == 1:
+                return "one@duck.com"
+            if len(calls) == 4 and threads and threads[0]._target is not None:
+                threads[0]._target()
+            if len(calls) <= 6:
+                return None
+            raise AssertionError("consumer stopped too late")
+
+        with mock.patch.object(ncs_register_legacy, "MAIL_PROVIDER", "duckmail"):
+            with mock.patch.object(ncs_register_legacy, "UPLOAD_API_URL", ""):
+                with mock.patch.object(runtime_batch, "ThreadPoolExecutor", FakeExecutor):
+                    with mock.patch.object(runtime_batch, "wait", side_effect=lambda futures, return_when=None: (set(futures), set())):
+                        with mock.patch.object(runtime_batch.threading, "Thread", ControlledProducerThread):
+                            with mock.patch.object(runtime_batch, "_produce_duck_addresses_until_exhausted", return_value=(3, "done")):
+                                with mock.patch("get_duck.try_take_duck_address", side_effect=fake_take):
+                                    with mock.patch.object(ncs_register_legacy.random, "uniform", return_value=0):
+                                        with mock.patch("time.sleep", return_value=None):
+                                            with mock.patch("sys.stdout", new=output):
+                                                runtime_batch.run_batch(total_accounts=5, max_workers=1)
+
+        self.assertEqual(len(calls), 6)
+        self.assertIn("地址池连续空读 3 次，消费者退出", output.getvalue())
+
+    def test_run_batch_duckmail_returns_false_when_pending_accounts_left_unprocessed(self):
+        class FakeFuture:
+            def __init__(self, result):
+                self._result = result
+
+            def result(self):
+                return self._result
+
+        class FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                del args, kwargs
+                self._results = [FakeFuture((True, "one@duck.com", "", None))]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                del fn, args, kwargs
+                return self._results.pop(0)
+
+        class ImmediateThread:
+            def __init__(self, *args, target=None, daemon=None, **kwargs):
+                del args, daemon, kwargs
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+            def join(self, timeout=None):
+                del timeout
+                return None
+
+        with mock.patch.object(ncs_register_legacy, "MAIL_PROVIDER", "duckmail"):
+            with mock.patch.object(ncs_register_legacy, "UPLOAD_API_URL", ""):
+                with mock.patch.object(runtime_batch, "ThreadPoolExecutor", FakeExecutor):
+                    with mock.patch.object(runtime_batch, "wait", side_effect=lambda futures, return_when=None: (set(futures), set())):
+                        with mock.patch.object(runtime_batch.threading, "Thread", ImmediateThread):
+                            with mock.patch.object(runtime_batch, "_produce_duck_addresses_until_exhausted", return_value=(1, "done")):
+                                with mock.patch("get_duck.try_take_duck_address", side_effect=["one@duck.com", None, None, None]):
+                                    with mock.patch.object(ncs_register_legacy.random, "uniform", return_value=0):
+                                        with mock.patch("time.sleep", return_value=None):
+                                            ok = runtime_batch.run_batch(total_accounts=5, max_workers=1)
+
+        self.assertFalse(ok)
+
     def test_run_batch_stops_launching_new_work_but_keeps_active_duck_failures_running(self):
         output = io.StringIO()
         submitted = []
@@ -1675,8 +1983,9 @@ class ProxyNormalizationTests(unittest.TestCase):
         fake_protocol_keygen = types.ModuleType("protocol_keygen")
 
         class FakeRegistrar:
-            def __init__(self, browser_tokens=None):
+            def __init__(self, browser_tokens=None, tag=""):
                 self.browser_tokens = browser_tokens
+                self.tag = tag
                 self.session = mock.Mock()
 
             def step0_init_oauth_session(self, email):
@@ -1736,8 +2045,9 @@ class ProxyNormalizationTests(unittest.TestCase):
         fake_protocol_keygen = types.ModuleType("protocol_keygen")
 
         class FakeRegistrar:
-            def __init__(self, browser_tokens=None):
+            def __init__(self, browser_tokens=None, tag=""):
                 self.browser_tokens = browser_tokens
+                self.tag = tag
                 self.session = mock.Mock()
 
             def step0_init_oauth_session(self, email):
@@ -1783,7 +2093,9 @@ class ProxyNormalizationTests(unittest.TestCase):
         kwargs = fake_protocol_keygen.perform_codex_oauth_login_http.call_args.kwargs
         self.assertEqual(kwargs["cf_token"], "duck-token")
         self.assertEqual(kwargs["provider"], "duckmail")
-        self.assertIs(kwargs["otp_fetcher"], mailbox_service.wait_for_verification_code)
+        self.assertEqual(kwargs["tag"], "duck")
+        self.assertNotEqual(kwargs["otp_fetcher"], mailbox_service.wait_for_verification_code)
+        self.assertEqual(kwargs["otp_fetcher"](77), mailbox_service.wait_for_verification_code.return_value)
 
     def test_fetch_codex_session_tokens_falls_back_to_chatgpt_session(self):
         register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)
