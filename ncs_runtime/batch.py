@@ -333,8 +333,6 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
 
                 while not duck_stop_launch and pending_indexes and len(active_futures) < actual_workers:
                     mailbox_email = get_duck.try_take_duck_address()
-                    if mailbox_email:
-                        get_duck.mark_duck_address_reserved(mailbox_email)
                     if not mailbox_email:
                         empty_reads += 1
                         if producer_done.is_set():
@@ -394,8 +392,6 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                     account_label = str(email or reserved_email or idx)
                     if ok:
                         success_count += 1
-                        if duckmail_mode and account_label:
-                            get_duck.clear_duck_address_reserved(account_label)
                         with legacy._print_lock:
                             print(f"[{account_label}] [结果] ✅成功")
                         since_last_upload += 1
@@ -412,8 +408,6 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                             since_last_upload = 0
                     else:
                         fail_count += 1
-                        if duckmail_mode and account_label:
-                            get_duck.clear_duck_address_reserved(account_label)
                         with legacy._print_lock:
                             detail = f": {err}" if err else ""
                             print(f"[{account_label}] [结果] ❌失败{detail}")

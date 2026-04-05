@@ -541,26 +541,26 @@ class ProxyNormalizationTests(unittest.TestCase):
         register._print.assert_called_once_with("[duckmail] 使用预取地址: preset@duck.com")
         self.assertEqual(register._preset_duck_address, "")
 
-    def test_take_duck_address_marks_reserved_addresses(self):
+    def test_take_duck_address_marks_recent_api_addresses_and_skips_used_entries(self):
         pool_file = Path("/tmp/test_duck_take_state_pool.txt")
-        pool_file.write_text("alpha@duck.com\n", encoding="utf-8")
+        pool_file.write_text("used@duck.com\nalpha@duck.com\n", encoding="utf-8")
         state_file = pool_file.with_name("duck_state.json")
         state_file.write_text(
-            json.dumps({"bearers": {}, "recent_api_addresses": {}, "reserved_addresses": {}, "active_bearer_index": 0}),
+            json.dumps({"bearers": {}, "recent_api_addresses": {"used@duck.com": "2026-04-05T00:00:00"}, "reserved_addresses": {}, "active_bearer_index": 0}),
             encoding="utf-8",
         )
 
         try:
             chosen = get_duck.try_take_duck_address(address_file=str(pool_file))
-            get_duck.mark_duck_address_reserved(chosen, address_file=str(pool_file))
             state = json.loads(state_file.read_text(encoding="utf-8"))
+            remaining = pool_file.read_text(encoding="utf-8")
         finally:
             pool_file.unlink(missing_ok=True)
             state_file.unlink(missing_ok=True)
 
         self.assertEqual(chosen, "alpha@duck.com")
-        self.assertIn("alpha@duck.com", state["reserved_addresses"])
-        self.assertEqual(state["recent_api_addresses"], {})
+        self.assertIn("alpha@duck.com", state["recent_api_addresses"])
+        self.assertEqual(remaining, "")
 
     def test_take_duck_address_consumes_first_address_from_pool_file(self):
         pool_file = Path("/tmp/test_duckaddress_pool.txt")
@@ -712,7 +712,7 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         self.assertEqual(bearers, ["token-1", "token-2"])
 
-    def test_produce_one_duck_address_skips_reserved_addresses(self):
+    def test_produce_one_duck_address_skips_recent_and_pool_duplicates(self):
         pool_file = Path("/tmp/test_duck_reserved_pool.txt")
         pool_file.write_text("", encoding="utf-8")
         state_file = pool_file.with_name("duck_state.json")
@@ -720,8 +720,8 @@ class ProxyNormalizationTests(unittest.TestCase):
             json.dumps(
                 {
                     "bearers": {},
-                    "recent_api_addresses": {},
-                    "reserved_addresses": {"phantom-cake-blitz@duck.com": "2026-04-05T00:00:00"},
+                    "recent_api_addresses": {"phantom-cake-blitz@duck.com": "2026-04-05T00:00:00"},
+                    "reserved_addresses": {},
                     "active_bearer_index": 0,
                 }
             ),

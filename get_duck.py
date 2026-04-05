@@ -63,12 +63,8 @@ def append_duck_address(address: str, address_file: str | None = None) -> bool:
         existing = load_duck_addresses(address_file)
         state = load_duck_state(address_file)
         recent = state.get("recent_api_addresses") if isinstance(state.get("recent_api_addresses"), dict) else {}
-        reserved = state.get("reserved_addresses") if isinstance(state.get("reserved_addresses"), dict) else {}
         if normalized in recent:
             _duck_log(f"[duckmail] 跳过近期已用地址: {address}")
-            return False
-        if normalized in reserved:
-            _duck_log(f"[duckmail] 跳过已预留地址: {address}")
             return False
         if normalized in {item.strip().lower() for item in existing}:
             _duck_log(f"[duckmail] 跳过池内已存在地址: {address}")
@@ -185,8 +181,26 @@ def try_take_duck_address(address_file: str | None = None) -> str | None:
         addresses = load_duck_addresses(address_file)
         if not addresses:
             return None
-        chosen = addresses[0]
-        _write_duck_addresses(addresses[1:], address_file)
+
+        state = load_duck_state(address_file)
+        recent = state.get("recent_api_addresses") if isinstance(state.get("recent_api_addresses"), dict) else {}
+
+        chosen = None
+        filtered: list[str] = []
+        for item in addresses:
+            normalized = item.strip().lower()
+            if normalized in recent:
+                _duck_log(f"[duckmail] 丢弃已用地址: {item}")
+                continue
+            if chosen is None:
+                chosen = item
+                recent[normalized] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                continue
+            filtered.append(item)
+
+        _write_duck_addresses(filtered, address_file)
+        state["recent_api_addresses"] = recent
+        save_duck_state(state, address_file)
         return chosen
 
 
@@ -207,31 +221,26 @@ def ensure_duck_address_available(
     last_error: Exception | None = None
     attempts = max(1, int(refill_attempts or 1))
 
-    with _POOL_LOCK:
-        for attempt in range(1, attempts + 1):
-            addresses = load_duck_addresses(address_file)
-            if addresses:
-                chosen = addresses[0]
-                _write_duck_addresses(addresses[1:], address_file)
-                return chosen
+    for attempt in range(1, attempts + 1):
+        chosen = try_take_duck_address(address_file)
+        if chosen:
+            return chosen
 
-            try:
-                added = fetch_duck_addresses(
-                    output_file=address_file,
-                    stop_count=stop_count,
-                    delay_seconds=delay_seconds,
-                )
-            except Exception as exc:
-                last_error = exc
-                added = []
-            if added:
-                addresses = load_duck_addresses(address_file)
-                if addresses:
-                    chosen = addresses[0]
-                    _write_duck_addresses(addresses[1:], address_file)
-                    return chosen
-            if attempt < attempts:
-                _duck_log(f"[duckmail] 地址池为空，第 {attempt}/{attempts} 次补充失败，重试中...")
+        try:
+            added = fetch_duck_addresses(
+                output_file=address_file,
+                stop_count=stop_count,
+                delay_seconds=delay_seconds,
+            )
+        except Exception as exc:
+            last_error = exc
+            added = []
+        if added:
+            chosen = try_take_duck_address(address_file)
+            if chosen:
+                return chosen
+        if attempt < attempts:
+            _duck_log(f"[duckmail] 地址池为空，第 {attempt}/{attempts} 次补充失败，重试中...")
 
     if last_error is not None:
         raise RuntimeError(f"duckaddress.txt 中没有可用的 duck 邮箱（已重试 {attempts} 次）") from last_error
