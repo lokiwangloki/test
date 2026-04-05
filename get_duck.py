@@ -63,8 +63,12 @@ def append_duck_address(address: str, address_file: str | None = None) -> bool:
         existing = load_duck_addresses(address_file)
         state = load_duck_state(address_file)
         recent = state.get("recent_api_addresses") if isinstance(state.get("recent_api_addresses"), dict) else {}
+        reserved = state.get("reserved_addresses") if isinstance(state.get("reserved_addresses"), dict) else {}
         if normalized in recent:
             _duck_log(f"[duckmail] 跳过近期已用地址: {address}")
+            return False
+        if normalized in reserved:
+            _duck_log(f"[duckmail] 跳过已预留地址: {address}")
             return False
         if normalized in {item.strip().lower() for item in existing}:
             _duck_log(f"[duckmail] 跳过池内已存在地址: {address}")
@@ -96,23 +100,25 @@ def _state_file(address_file: str | None = None) -> Path:
 def load_duck_state(address_file: str | None = None) -> dict:
     path = _state_file(address_file)
     if not path.exists():
-        return {"bearers": {}, "recent_api_addresses": {}, "active_bearer_index": 0}
+        return {"bearers": {}, "recent_api_addresses": {}, "active_bearer_index": 0, "reserved_addresses": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {"bearers": {}, "recent_api_addresses": {}, "active_bearer_index": 0}
+        return {"bearers": {}, "recent_api_addresses": {}, "active_bearer_index": 0, "reserved_addresses": {}}
     if not isinstance(data, dict):
-        return {"bearers": {}, "recent_api_addresses": {}, "active_bearer_index": 0}
+        return {"bearers": {}, "recent_api_addresses": {}, "active_bearer_index": 0, "reserved_addresses": {}}
     bearers = data.get("bearers") if isinstance(data.get("bearers"), dict) else {}
     recent = data.get("recent_api_addresses") if isinstance(data.get("recent_api_addresses"), dict) else {}
+    reserved = data.get("reserved_addresses") if isinstance(data.get("reserved_addresses"), dict) else {}
     active_index = int(data.get("active_bearer_index") or 0)
-    return {"bearers": bearers, "recent_api_addresses": recent, "active_bearer_index": active_index}
+    return {"bearers": bearers, "recent_api_addresses": recent, "active_bearer_index": active_index, "reserved_addresses": reserved}
 
 
 def save_duck_state(state: dict, address_file: str | None = None) -> None:
     payload = {
         "bearers": state.get("bearers") if isinstance(state.get("bearers"), dict) else {},
         "recent_api_addresses": state.get("recent_api_addresses") if isinstance(state.get("recent_api_addresses"), dict) else {},
+        "reserved_addresses": state.get("reserved_addresses") if isinstance(state.get("reserved_addresses"), dict) else {},
         "active_bearer_index": int(state.get("active_bearer_index") or 0),
     }
     path = _state_file(address_file)
@@ -132,6 +138,31 @@ def reset_duck_bearer_repeat_counts(address_file: str | None = None) -> None:
                 changed = True
         if changed:
             state["bearers"] = bearers
+            save_duck_state(state, address_file)
+
+
+def mark_duck_address_reserved(address: str, address_file: str | None = None) -> None:
+    normalized = str(address or "").strip().lower()
+    if not normalized:
+        return
+    with _POOL_LOCK:
+        state = load_duck_state(address_file)
+        reserved = state.get("reserved_addresses") if isinstance(state.get("reserved_addresses"), dict) else {}
+        reserved[normalized] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        state["reserved_addresses"] = reserved
+        save_duck_state(state, address_file)
+
+
+def clear_duck_address_reserved(address: str, address_file: str | None = None) -> None:
+    normalized = str(address or "").strip().lower()
+    if not normalized:
+        return
+    with _POOL_LOCK:
+        state = load_duck_state(address_file)
+        reserved = state.get("reserved_addresses") if isinstance(state.get("reserved_addresses"), dict) else {}
+        if normalized in reserved:
+            reserved.pop(normalized, None)
+            state["reserved_addresses"] = reserved
             save_duck_state(state, address_file)
 
 
@@ -224,10 +255,15 @@ def remove_duck_addresses(addresses: list[str] | tuple[str, ...] | set[str], add
         removed = len(existing) - len(filtered)
         state = load_duck_state(address_file)
         recent = state.get("recent_api_addresses") or {}
+        reserved = state.get("reserved_addresses") or {}
         if isinstance(recent, dict):
             for item in normalized:
                 recent[item] = time.strftime("%Y-%m-%dT%H:%M:%S")
             state["recent_api_addresses"] = recent
+        if isinstance(reserved, dict):
+            for item in normalized:
+                reserved.pop(item, None)
+            state["reserved_addresses"] = reserved
         if removed > 0:
             _write_duck_addresses(filtered, address_file)
         save_duck_state(state, address_file)
@@ -407,6 +443,7 @@ def produce_one_duck_address(
         with _POOL_LOCK:
             state = load_duck_state(address_file)
             recent_api_addresses = state.get("recent_api_addresses") if isinstance(state.get("recent_api_addresses"), dict) else {}
+            reserved_addresses = state.get("reserved_addresses") if isinstance(state.get("reserved_addresses"), dict) else {}
             bearer_states = state.get("bearers") if isinstance(state.get("bearers"), dict) else {}
             bearer_state = dict(bearer_states.get(token_key) if isinstance(bearer_states.get(token_key), dict) else {})
             bearer_state["last_seen"] = full_address.lower()
@@ -415,6 +452,8 @@ def produce_one_duck_address(
             existing_addresses = {item.strip().lower() for item in load_duck_addresses(address_file)}
             if full_address.lower() in recent_api_addresses:
                 _duck_log(f"[duckmail] 跳过近期已用地址: {full_address}")
+            elif full_address.lower() in reserved_addresses:
+                _duck_log(f"[duckmail] 跳过已预留地址: {full_address}")
             elif full_address.lower() in existing_addresses:
                 _duck_log(f"[duckmail] 跳过池内已存在地址: {full_address}")
             else:
