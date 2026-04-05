@@ -392,8 +392,6 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                     account_label = str(email or reserved_email or idx)
                     if ok:
                         success_count += 1
-                        with legacy._print_lock:
-                            print(f"[{account_label}] [结果] ✅成功")
                         since_last_upload += 1
                         with _consec_fail_lock:
                             _consec_fail_count[0] = 0
@@ -408,9 +406,6 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                             since_last_upload = 0
                     else:
                         fail_count += 1
-                        with legacy._print_lock:
-                            detail = f": {err}" if err else ""
-                            print(f"[{account_label}] [结果] ❌失败{detail}")
                         if _is_duck_pool_exhausted(err):
                             pending_indexes.clear()
                             duck_stop_launch = True

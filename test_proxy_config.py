@@ -1575,6 +1575,8 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIn("已启动独立生产者", rendered)
         self.assertIn("[调度] Email 池已空，消费者已退出", rendered)
         self.assertIn("生产者累计追加: 2 个", rendered)
+        self.assertNotIn("[first@duck.com] [结果] ✅成功", rendered)
+        self.assertNotIn("[second@duck.com] [结果] ✅成功", rendered)
 
     def test_run_batch_duckmail_joins_producer_before_summary(self):
         output = io.StringIO()
@@ -2222,6 +2224,9 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIn("[duck] [Oauth获取token] ✅获取Token成功", rendered)
         self.assertNotIn("[duck] step0 visible", rendered)
         self.assertNotIn("[duck] oauth visible", rendered)
+        self.assertNotIn("Token JSON 已保存到", rendered)
+        self.assertNotIn("Codex Token 获取成功", rendered)
+        self.assertNotIn("Access Token 长度", rendered)
 
     def test_registration_engine_retries_oauth_once_after_first_failure(self):
         mailbox_service = mock.Mock()
