@@ -79,14 +79,11 @@ def _run_cpa_upload_with_compact_log() -> tuple[int, int, str]:
         uploaded = int(match.group(1))
         failed = int(match.group(2))
         if failed == 0 and uploaded > 0:
-            print("[CPA上传] ✅成功")
             return uploaded, failed, ""
         reason = f"成功 {uploaded} 个, 失败 {failed} 个"
-        print(f"[CPA上传] ❌失败: {reason}")
         return uploaded, failed, reason
 
     reason = _extract_stage_failure_reason(output, "未找到可上传 token")
-    print(f"[CPA上传] ❌失败: {reason}")
     return 0, 0, reason
 
 
@@ -401,7 +398,13 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                         with _consec_fail_lock:
                             _consec_fail_count[0] = 0
                         if legacy.UPLOAD_API_URL and since_last_upload >= upload_every_n:
-                            _run_cpa_upload_with_compact_log()
+                            uploaded, failed, reason = _run_cpa_upload_with_compact_log()
+                            with legacy._print_lock:
+                                if failed == 0 and uploaded > 0:
+                                    print(f"[{account_label}] ✅CPA 上传成功")
+                                else:
+                                    detail = reason or "未找到可上传 token"
+                                    print(f"[{account_label}] ❌CPA 上传失败: {detail}")
                             since_last_upload = 0
                     else:
                         fail_count += 1

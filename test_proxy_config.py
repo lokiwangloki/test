@@ -239,7 +239,7 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         self.assertEqual((uploaded, failed), (1, 2))
         self.assertEqual(reason, "成功 1 个, 失败 2 个")
-        self.assertEqual(output.getvalue().strip(), "[CPA上传] ❌上传失败: 成功 1 个, 失败 2 个")
+        self.assertEqual(output.getvalue().strip(), "")
 
     def test_otp_message_ids_are_not_reused_across_calls(self):
         register = ncs_register_legacy.ChatGPTRegister.__new__(ncs_register_legacy.ChatGPTRegister)

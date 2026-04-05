@@ -17,6 +17,9 @@ class _StageSummaryWriter(io.TextIOBase):
         self._tag = str(tag or "")
         self._stage = str(stage or "")
         self._pending = ""
+        self._login_printed = False
+        self._register_printed = False
+        self._oauth_printed = False
 
     def write(self, data):
         text = str(data or "")
@@ -37,9 +40,37 @@ class _StageSummaryWriter(io.TextIOBase):
         text = str(line or "").strip()
         if not text:
             return
-        if self._stage == "register" and "login_session" in text and ("✅" in text or "已获取" in text):
-            with legacy._print_lock:
-                print(f"[{self._tag}] ✅login_session 已获取")
+        lowered = text.lower()
+        if self._stage == "register":
+            if not self._login_printed and "login_session" in text and ("✅" in text or "已获取" in text):
+                self._login_printed = True
+                with legacy._print_lock:
+                    print(f"[{self._tag}] ✅login_session 已获取")
+                return
+            if not self._register_printed and (text.startswith("❌ 失败:") or text.startswith("失败:")):
+                self._register_printed = True
+                reason = text.split(":", 1)[1].strip() if ":" in text else text
+                with legacy._print_lock:
+                    print(f"[{self._tag}] ❌注册失败: {reason}")
+                return
+            if not self._register_printed and ("✅ 用户注册接口成功" in text or "✅注册成功" in text):
+                self._register_printed = True
+                with legacy._print_lock:
+                    print(f"[{self._tag}] ✅注册成功")
+                return
+            return
+        if self._stage == "oauth":
+            if not self._oauth_printed and (text.startswith("❌ ") or "未获取到 authorization code" in text or "add-phone" in lowered):
+                self._oauth_printed = True
+                reason = text[2:].strip() if text.startswith("❌ ") else text
+                with legacy._print_lock:
+                    print(f"[{self._tag}] ❌Oauth token 获取失败: {reason}")
+                return
+            if not self._oauth_printed and ("✅ consent 直接 302 获取到 code" in text or "✅获取Token成功" in text):
+                self._oauth_printed = True
+                with legacy._print_lock:
+                    print(f"[{self._tag}] ✅Oauth token 获取成功")
+                return
 
 
 
