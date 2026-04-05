@@ -545,6 +545,25 @@ class ProxyNormalizationTests(unittest.TestCase):
         register._print.assert_called_once_with("[duckmail] 使用预取地址: preset@duck.com")
         self.assertEqual(register._preset_duck_address, "")
 
+    def test_take_duck_address_does_not_mark_recent_api_addresses(self):
+        pool_file = Path("/tmp/test_duck_take_state_pool.txt")
+        pool_file.write_text("alpha@duck.com\n", encoding="utf-8")
+        state_file = pool_file.with_name("duck_state.json")
+        state_file.write_text(
+            json.dumps({"bearers": {}, "recent_api_addresses": {}, "active_bearer_index": 0}),
+            encoding="utf-8",
+        )
+
+        try:
+            chosen = get_duck.try_take_duck_address(address_file=str(pool_file))
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+        finally:
+            pool_file.unlink(missing_ok=True)
+            state_file.unlink(missing_ok=True)
+
+        self.assertEqual(chosen, "alpha@duck.com")
+        self.assertEqual(state["recent_api_addresses"], {})
+
     def test_take_duck_address_consumes_first_address_from_pool_file(self):
         pool_file = Path("/tmp/test_duckaddress_pool.txt")
         pool_file.write_text(
@@ -580,6 +599,25 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         self.assertEqual(state["bearers"]["token-hash"]["last_seen"], "beta@duck.com")
         self.assertIn("beta@duck.com", state["recent_api_addresses"])
+
+    def test_append_duck_address_does_not_mark_recent_api_addresses(self):
+        pool_file = Path("/tmp/test_duck_append_state_pool.txt")
+        pool_file.write_text("", encoding="utf-8")
+        state_file = pool_file.with_name("duck_state.json")
+        state_file.write_text(
+            json.dumps({"bearers": {}, "recent_api_addresses": {}, "active_bearer_index": 0}),
+            encoding="utf-8",
+        )
+
+        try:
+            added_new = get_duck.append_duck_address("gamma@duck.com", address_file=str(pool_file))
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+        finally:
+            pool_file.unlink(missing_ok=True)
+            state_file.unlink(missing_ok=True)
+
+        self.assertTrue(added_new)
+        self.assertNotIn("gamma@duck.com", state["recent_api_addresses"])
 
     def test_append_duck_address_skips_recent_and_duplicates(self):
         pool_file = Path("/tmp/test_duck_append_pool.txt")
@@ -618,6 +656,25 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         self.assertEqual(removed, 1)
         self.assertEqual(remaining, "alpha@duck.com\ngamma@duck.com\n")
+
+    def test_ensure_duck_address_available_does_not_mark_recent_api_addresses(self):
+        pool_file = Path("/tmp/test_duck_ensure_state_pool.txt")
+        pool_file.write_text("alpha@duck.com\n", encoding="utf-8")
+        state_file = pool_file.with_name("duck_state.json")
+        state_file.write_text(
+            json.dumps({"bearers": {}, "recent_api_addresses": {}, "active_bearer_index": 0}),
+            encoding="utf-8",
+        )
+
+        try:
+            chosen = get_duck.ensure_duck_address_available(address_file=str(pool_file))
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+        finally:
+            pool_file.unlink(missing_ok=True)
+            state_file.unlink(missing_ok=True)
+
+        self.assertEqual(chosen, "alpha@duck.com")
+        self.assertEqual(state["recent_api_addresses"], {})
 
     def test_ensure_duck_address_available_fetches_when_pool_is_empty(self):
         pool_file = Path("/tmp/test_duckaddress_refill_pool.txt")
@@ -717,7 +774,7 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertEqual(added, ["wham-justness-cape@duck.com"])
         self.assertEqual(saved, "wham-justness-cape@duck.com\n")
         self.assertIn("recent_api_addresses", state)
-        self.assertIn("wham-justness-cape@duck.com", state["recent_api_addresses"])
+        self.assertNotIn("wham-justness-cape@duck.com", state["recent_api_addresses"])
 
     def test_fetch_duck_addresses_sticks_to_active_bearer_until_repeat_threshold(self):
         pool_file = Path("/tmp/test_duck_fill_first_pool.txt")
@@ -1730,12 +1787,27 @@ class ProxyNormalizationTests(unittest.TestCase):
                 submitted.append(future)
                 return future
 
+        class ImmediateThread:
+            def __init__(self, *args, target=None, daemon=None, **kwargs):
+                del args, daemon, kwargs
+                self._target = target
+
+            def start(self):
+                return None
+
+            def join(self, timeout=None):
+                del timeout
+                return None
+
         with mock.patch.object(ncs_register_legacy, "MAIL_PROVIDER", "duckmail"):
             with mock.patch.object(ncs_register_legacy, "UPLOAD_API_URL", ""):
                 with mock.patch.object(runtime_batch, "ThreadPoolExecutor", FakeExecutor):
                     with mock.patch.object(runtime_batch, "wait", side_effect=lambda futures, return_when=None: (set(futures), set())):
-                        with mock.patch("sys.stdout", new=output):
-                            runtime_batch.run_batch(total_accounts=5, max_workers=2)
+                        with mock.patch.object(runtime_batch.threading, "Thread", ImmediateThread):
+                            with mock.patch.object(runtime_batch, "_produce_duck_addresses_until_exhausted", return_value=(0, "done")):
+                                with mock.patch("get_duck.try_take_duck_address", side_effect=["first@duck.com", "second@duck.com", None, None, None]):
+                                    with mock.patch("sys.stdout", new=output):
+                                        runtime_batch.run_batch(total_accounts=5, max_workers=2)
 
         rendered = output.getvalue()
         self.assertIn("停止投放新任务，等待已启动任务完成", rendered)

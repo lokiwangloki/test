@@ -73,9 +73,6 @@ def append_duck_address(address: str, address_file: str | None = None) -> bool:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(f"{normalized}\n")
-        recent[normalized] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        state["recent_api_addresses"] = recent
-        save_duck_state(state, address_file)
         _duck_log(f"[duckmail] 已追加新地址: {normalized}")
         return True
 
@@ -143,11 +140,6 @@ def try_take_duck_address(address_file: str | None = None) -> str | None:
             return None
         chosen = addresses[0]
         _write_duck_addresses(addresses[1:], address_file)
-        state = load_duck_state(address_file)
-        recent = state.get("recent_api_addresses") if isinstance(state.get("recent_api_addresses"), dict) else {}
-        recent[str(chosen).strip().lower()] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        state["recent_api_addresses"] = recent
-        save_duck_state(state, address_file)
         return chosen
 
 
@@ -174,12 +166,6 @@ def ensure_duck_address_available(
             if addresses:
                 chosen = addresses[0]
                 _write_duck_addresses(addresses[1:], address_file)
-                state = load_duck_state(address_file)
-                recent = state.get("recent_api_addresses") or {}
-                if isinstance(recent, dict):
-                    recent[str(chosen).strip().lower()] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                    state["recent_api_addresses"] = recent
-                    save_duck_state(state, address_file)
                 return chosen
 
             try:
@@ -196,12 +182,6 @@ def ensure_duck_address_available(
                 if addresses:
                     chosen = addresses[0]
                     _write_duck_addresses(addresses[1:], address_file)
-                    state = load_duck_state(address_file)
-                    recent = state.get("recent_api_addresses") or {}
-                    if isinstance(recent, dict):
-                        recent[str(chosen).strip().lower()] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                        state["recent_api_addresses"] = recent
-                        save_duck_state(state, address_file)
                     return chosen
             if attempt < attempts:
                 _duck_log(f"[duckmail] 地址池为空，第 {attempt}/{attempts} 次补充失败，重试中...")
@@ -423,7 +403,6 @@ def produce_one_duck_address(
                 _duck_log(f"[duckmail] 跳过池内已存在地址: {full_address}")
             else:
                 append_duck_address(full_address, address_file=address_file)
-                recent_api_addresses[full_address.lower()] = time.strftime("%Y-%m-%dT%H:%M:%S")
                 bearer_state["last_accepted"] = full_address.lower()
                 bearer_states[token_key] = bearer_state
                 state["bearers"] = bearer_states
@@ -514,7 +493,6 @@ def fetch_duck_addresses(
             to_add.append(item)
             seen.add(item)
             bearer_state["last_accepted"] = normalized
-            recent_api_addresses[normalized] = time.strftime("%Y-%m-%dT%H:%M:%S")
             accepted = True
             state["active_bearer_index"] = index
             if same_count >= stop_count:
