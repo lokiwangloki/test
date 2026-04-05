@@ -119,6 +119,22 @@ def save_duck_state(state: dict, address_file: str | None = None) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def reset_duck_bearer_repeat_counts(address_file: str | None = None) -> None:
+    with _POOL_LOCK:
+        state = load_duck_state(address_file)
+        bearers = state.get("bearers") if isinstance(state.get("bearers"), dict) else {}
+        changed = False
+        for bearer_key, bearer_state in list(bearers.items()):
+            if isinstance(bearer_state, dict) and "repeat_count" in bearer_state:
+                updated = dict(bearer_state)
+                updated.pop("repeat_count", None)
+                bearers[bearer_key] = updated
+                changed = True
+        if changed:
+            state["bearers"] = bearers
+            save_duck_state(state, address_file)
+
+
 def _bearer_state_key(bearer: str) -> str:
     return hashlib.sha256(str(bearer or "").encode("utf-8")).hexdigest()
 

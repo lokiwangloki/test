@@ -1522,7 +1522,7 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(submitted_mailboxes, ["first@duck.com", "second@duck.com"])
         self.assertIn("已启动独立生产者", rendered)
-        self.assertIn("地址池连续空读 3 次，消费者退出", rendered)
+        self.assertIn("[调度] Email 池已空，消费者已退出", rendered)
         self.assertIn("生产者累计追加: 2 个", rendered)
 
     def test_run_batch_duckmail_joins_producer_before_summary(self):
@@ -1634,6 +1634,63 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         self.assertEqual(executor_workers, [5])
 
+    def test_run_batch_duckmail_prints_pool_and_account_status_lines(self):
+        output = io.StringIO()
+
+        class FakeFuture:
+            def __init__(self, result):
+                self._result = result
+
+            def result(self):
+                return self._result
+
+        class FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                del args, kwargs
+                self._results = [FakeFuture((True, "one@duck.com", "", None))]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                del fn, args, kwargs
+                return self._results.pop(0)
+
+        class ImmediateThread:
+            def __init__(self, *args, target=None, daemon=None, **kwargs):
+                del args, daemon, kwargs
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+            def join(self, timeout=None):
+                del timeout
+                return None
+
+        with mock.patch.object(ncs_register_legacy, "MAIL_PROVIDER", "duckmail"):
+            with mock.patch.object(ncs_register_legacy, "UPLOAD_API_URL", ""):
+                with mock.patch.object(runtime_batch, "ThreadPoolExecutor", FakeExecutor):
+                    with mock.patch.object(runtime_batch, "wait", side_effect=lambda futures, return_when=None: (set(futures), set())):
+                        with mock.patch.object(runtime_batch.threading, "Thread", ImmediateThread):
+                            with mock.patch.object(runtime_batch, "_produce_duck_addresses_until_exhausted", return_value=(1, "done")):
+                                with mock.patch("get_duck.try_take_duck_address", side_effect=["one@duck.com", None, None, None]):
+                                    with mock.patch("get_duck.load_duck_addresses", return_value=[]):
+                                        with mock.patch.object(ncs_register_legacy.random, "uniform", return_value=0):
+                                            with mock.patch("time.sleep", return_value=None):
+                                                with mock.patch("sys.stdout", new=output):
+                                                    runtime_batch.run_batch(total_accounts=2, max_workers=1)
+
+        rendered = output.getvalue()
+        self.assertIn("[调度] 当前 Email 池内数量 = 0，等待生产者补充。", rendered)
+        self.assertIn("[account] 已成功：0  已失败：0", rendered)
+        self.assertIn("[调度] 当前生产者已退出", rendered)
+        self.assertIn("[调度] Email 池已空，消费者已退出", rendered)
+
     def test_run_batch_duckmail_waits_for_three_empty_reads_after_producer_stops(self):
         output = io.StringIO()
         threads = []
@@ -1697,7 +1754,7 @@ class ProxyNormalizationTests(unittest.TestCase):
                                                 runtime_batch.run_batch(total_accounts=5, max_workers=1)
 
         self.assertEqual(len(calls), 6)
-        self.assertIn("地址池连续空读 3 次，消费者退出", output.getvalue())
+        self.assertIn("[调度] Email 池已空，消费者已退出", output.getvalue())
 
     def test_run_batch_duckmail_returns_false_when_pending_accounts_left_unprocessed(self):
         class FakeFuture:

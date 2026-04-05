@@ -79,15 +79,21 @@ def _run_cpa_upload_with_compact_log() -> tuple[int, int, str]:
         uploaded = int(match.group(1))
         failed = int(match.group(2))
         if failed == 0 and uploaded > 0:
-            print("[CPA上传] ✅上传成功")
+            print("[CPA上传] ✅成功")
             return uploaded, failed, ""
         reason = f"成功 {uploaded} 个, 失败 {failed} 个"
-        print(f"[CPA上传] ❌上传失败: {reason}")
+        print(f"[CPA上传] ❌失败: {reason}")
         return uploaded, failed, reason
 
     reason = _extract_stage_failure_reason(output, "未找到可上传 token")
-    print(f"[CPA上传] ❌上传失败: {reason}")
+    print(f"[CPA上传] ❌失败: {reason}")
     return 0, 0, reason
+
+
+def _log_batch_status(success_count: int, fail_count: int, *, pool_count: int | None = None) -> None:
+    if pool_count is not None:
+        print(f"[email] 当前 Email 池内数量：{pool_count}")
+    print(f"[account] 已成功：{success_count}  已失败：{fail_count}")
 
 
 def _is_duck_pool_exhausted(error_message: str) -> bool:
@@ -280,6 +286,17 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
     upload_every_n = max(1, int(cpa_upload_every_n or 1))
     since_last_upload = 0
 
+    initial_pool_count = 0
+    if duckmail_mode:
+        import get_duck
+        get_duck.reset_duck_bearer_repeat_counts()
+        initial_pool_count = len(get_duck.load_duck_addresses())
+        if initial_pool_count > 0:
+            print("[调度] 当前 Email 池内数量 > 0, 启动消费者。")
+        else:
+            print("[调度] 当前 Email 池内数量 = 0，等待生产者补充。")
+        _log_batch_status(success_count, fail_count, pool_count=initial_pool_count)
+
     duck_poll_min = max(5, int(getattr(legacy, "TASK_LAUNCH_INTERVAL_MIN_SECONDS", 5) or 5))
     duck_poll_max = max(
         duck_poll_min,
@@ -328,13 +345,20 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                         if producer_done.is_set() and empty_reads_after_stop >= 3:
                             duck_stop_launch = True
                             with legacy._print_lock:
-                                print("[duckmail] 地址池连续空读 3 次，消费者退出")
+                                print("[调度] Email 池已空，消费者已退出")
+                            break
+                        if not producer_done.is_set():
+                            delay = legacy.random.uniform(duck_poll_min, duck_poll_max)
+                            with legacy._print_lock:
+                                print(f"[调度] 当前 Email 池内数量：0")
+                                print(f"[account] 已成功：{success_count}  已失败：{fail_count}")
+                                print(f"[duckmail] 地址池为空，生产者运行中，{delay:.1f} 秒后重试")
+                            time.sleep(delay)
                             break
                         delay = legacy.random.uniform(duck_poll_min, duck_poll_max)
-                        producer_state = "生产者运行中" if not producer_done.is_set() else "生产者已停止"
-                        current_empty = empty_reads_after_stop if producer_done.is_set() else empty_reads
                         with legacy._print_lock:
-                            print(f"[duckmail] 地址池为空，第 {current_empty}/3 次空读（{producer_state}），{delay:.1f} 秒后重试")
+                            print(f"[调度] 当前生产者已退出")
+                            print(f"[duckmail] 地址池为空，第 {empty_reads_after_stop}/3 次空读，{delay:.1f} 秒后重试")
                         time.sleep(delay)
                         break
 
@@ -398,6 +422,8 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
                     _record_failure_and_maybe_rotate()
                 finally:
                     completed_count += 1
+                    with legacy._print_lock:
+                        _log_batch_status(success_count, fail_count)
                     legacy._render_apt_like_progress(
                         completed_count, total_accounts, success_count, fail_count, start_time
                     )
@@ -416,6 +442,9 @@ def run_batch(total_accounts: int = 3, output_file: str = "registered_accounts.t
 
     if duckmail_mode:
         with legacy._print_lock:
+            current_pool_count = len(__import__('get_duck').load_duck_addresses())
+            print(f"[email] 当前 Email 池内数量：{current_pool_count}")
+            print("[调度] 当前生产者已退出")
             print(f"[duckmail] 生产者累计追加: {producer_summary['produced']} 个")
             if producer_summary["error"]:
                 print(f"[duckmail] 生产者结束原因: {producer_summary['error']}")
