@@ -12,6 +12,37 @@ import ncs_register_legacy as legacy
 from .email_services import build_mailbox_service, get_provider_candidates
 
 
+class _StageSummaryWriter(io.TextIOBase):
+    def __init__(self, *, tag: str, stage: str):
+        self._tag = str(tag or "")
+        self._stage = str(stage or "")
+        self._pending = ""
+
+    def write(self, data):
+        text = str(data or "")
+        if not text:
+            return 0
+        self._pending += text
+        while "\n" in self._pending:
+            line, self._pending = self._pending.split("\n", 1)
+            self._emit(line)
+        return len(text)
+
+    def flush(self):
+        if self._pending:
+            self._emit(self._pending)
+            self._pending = ""
+
+    def _emit(self, line: str) -> None:
+        text = str(line or "").strip()
+        if not text:
+            return
+        if self._stage == "register" and "login_session" in text and ("✅" in text or "已获取" in text):
+            with legacy._print_lock:
+                print(f"[{self._tag}] ✅login_session 已获取")
+
+
+
 _KNOWN_ERROR_CODES = frozenset({
     "registration_disallowed",
     "unsupported_email",
@@ -125,27 +156,32 @@ def _extract_stage_failure_reason(output: str, fallback: str = "") -> str:
 
 
 @contextmanager
-def _capture_stage_output():
+def _capture_stage_output(tag: str = "", stage: str = ""):
     buffer = io.StringIO()
 
     if str(os.getenv("GITHUB_ACTIONS", "")).strip() or str(os.getenv("CI", "")).strip():
-        class _Tee(io.TextIOBase):
-            def __init__(self, primary, secondary):
+        summary = _StageSummaryWriter(tag=tag, stage=stage)
+
+        class _BufferOnly(io.TextIOBase):
+            def __init__(self, primary, summary_writer=None):
                 self._primary = primary
-                self._secondary = secondary
+                self._summary_writer = summary_writer
 
             def write(self, data):
-                self._secondary.write(data)
+                if self._summary_writer is not None:
+                    self._summary_writer.write(data)
                 return self._primary.write(data)
 
             def flush(self):
-                self._secondary.flush()
+                if self._summary_writer is not None:
+                    self._summary_writer.flush()
                 self._primary.flush()
 
-        tee_stdout = _Tee(buffer, sys.stdout)
-        tee_stderr = _Tee(buffer, sys.stderr)
+        tee_stdout = _BufferOnly(buffer, summary)
+        tee_stderr = _BufferOnly(buffer, summary)
         with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
             yield buffer
+        summary.flush()
         return
 
     with redirect_stdout(buffer), redirect_stderr(buffer):
@@ -247,8 +283,9 @@ class RegistrationEngine:
             registration_otp_fetcher = lambda timeout: mailbox_service.wait_for_verification_code(timeout, stage="register")
             oauth_otp_fetcher = lambda timeout: mailbox_service.wait_for_verification_code(timeout, stage="oauth")
             registration_output = io.StringIO()
+            stage_login_ready = False
             try:
-                with _capture_stage_output() as registration_output:
+                with _capture_stage_output(account_tag, "register") as registration_output:
                     set_browser_log_prefix(f"[{account_tag}] ")
                     try:
                         browser_tokens = get_all_sentinel_tokens(
@@ -261,6 +298,7 @@ class RegistrationEngine:
 
                     if not registrar.step0_init_oauth_session(mailbox.email):
                         raise Exception("OAuth 会话初始化失败")
+                    stage_login_ready = True
 
                     time.sleep(1)
 
@@ -287,6 +325,9 @@ class RegistrationEngine:
                     save_account(mailbox.email, chatgpt_password)
             except Exception as error:
                 reason = _extract_stage_failure_reason(registration_output.getvalue(), str(error))
+                if stage_login_ready:
+                    with legacy._print_lock:
+                        print(f"[{account_tag}] ❌注册失败: {reason}")
                 _print_stage_status(account_tag, "仅注册", False, "注册成功", "注册失败", reason)
                 return RegistrationResult(
                     idx=self.idx,
@@ -306,7 +347,7 @@ class RegistrationEngine:
                     tokens = None
                     for oauth_attempt in range(2):
                         oauth_output = io.StringIO()
-                        with _capture_stage_output() as oauth_output:
+                        with _capture_stage_output(account_tag, "oauth") as oauth_output:
                             if oauth_attempt == 0:
                                 time.sleep(5)
                             else:

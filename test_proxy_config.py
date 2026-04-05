@@ -2167,12 +2167,10 @@ class ProxyNormalizationTests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertTrue(result.success)
-        self.assertIn("[duck] step0 visible", rendered)
-        self.assertIn("[duck] step2 visible", rendered)
-        self.assertIn("[duck] otp send visible", rendered)
-        self.assertIn("[duck] otp validate visible", rendered)
-        self.assertIn("[duck] account create visible", rendered)
-        self.assertIn("[duck] oauth visible", rendered)
+        self.assertIn("[duck] [仅注册] ✅注册成功", rendered)
+        self.assertIn("[duck] [Oauth获取token] ✅获取Token成功", rendered)
+        self.assertNotIn("[duck] step0 visible", rendered)
+        self.assertNotIn("[duck] oauth visible", rendered)
 
     def test_registration_engine_retries_oauth_once_after_first_failure(self):
         mailbox_service = mock.Mock()
