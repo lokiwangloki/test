@@ -2,19 +2,23 @@
   "bearers": {
     "3637659c5f2185f3c2e9fee218a6206c4ff4d7a6e0a6ce1657ebc30235b1956b": {
       "last_seen": "sushi-motor-cabana@duck.com",
-      "last_accepted": "sushi-motor-cabana@duck.com"
+      "last_accepted": "sushi-motor-cabana@duck.com",
+      "repeat_count": 2
     },
     "77e82c4b5b1e9ad3b859b145129fceb80aa6fef41baf1f93e249102777359f9d": {
       "last_seen": "irk-unplug-clerk@duck.com",
-      "last_accepted": "irk-unplug-clerk@duck.com"
+      "last_accepted": "irk-unplug-clerk@duck.com",
+      "repeat_count": 2
     },
     "22a6da391156a8088afb091f6ada73f89dfd9f7c486d966f8509f05dd43092ee": {
-      "last_seen": "basil-lion-deduce@duck.com",
-      "last_accepted": "basil-lion-deduce@duck.com"
+      "last_seen": "rice-savage-gilled@duck.com",
+      "last_accepted": "rice-savage-gilled@duck.com",
+      "repeat_count": 3
     },
     "fafc42d093ca7eb27e15e4f82283ad438a14928fdde9ed24fba01a41d712b609": {
-      "last_seen": "last-famine-ream@duck.com",
-      "last_accepted": "last-famine-ream@duck.com"
+      "last_seen": "bok-marine-keep@duck.com",
+      "last_accepted": "bok-marine-keep@duck.com",
+      "repeat_count": 2
     }
   },
   "recent_api_addresses": {
@@ -144,7 +148,54 @@
     "gooey-rift-twins@duck.com": "2026-04-04T19:31:03",
     "irk-unplug-clerk@duck.com": "2026-04-04T19:31:13",
     "quiet-scorch-jiffy@duck.com": "2026-04-04T21:17:33",
-    "last-famine-ream@duck.com": "2026-04-04T21:17:36"
+    "last-famine-ream@duck.com": "2026-04-04T21:17:36",
+    "bungee-scone-carry@duck.com": "2026-04-05T05:30:44",
+    "sway-deprive-golf@duck.com": "2026-04-05T05:30:50",
+    "jet-alarm-extras@duck.com": "2026-04-05T05:30:58",
+    "moonlit-silly-keg@duck.com": "2026-04-05T05:31:04",
+    "doing-ramp-evolve@duck.com": "2026-04-05T05:31:10",
+    "quit-muppet-fifth@duck.com": "2026-04-05T05:31:28",
+    "till-reps-derived@duck.com": "2026-04-05T05:31:37",
+    "awry-syrup-reverse@duck.com": "2026-04-05T05:31:42",
+    "judge-fringe-reply@duck.com": "2026-04-05T05:31:48",
+    "sugar-lurk-purple@duck.com": "2026-04-05T05:31:54",
+    "uptown-skies-kelp@duck.com": "2026-04-05T05:32:11",
+    "unplug-tweed-gulp@duck.com": "2026-04-05T05:32:21",
+    "tarot-panda-elm@duck.com": "2026-04-05T05:32:25",
+    "panther-macaw-stir@duck.com": "2026-04-05T05:32:32",
+    "plywood-spur-corny@duck.com": "2026-04-05T05:32:39",
+    "phony-headed-ivy@duck.com": "2026-04-05T05:32:55",
+    "worst-sphinx-dove@duck.com": "2026-04-05T05:33:05",
+    "saline-given-aloha@duck.com": "2026-04-05T05:33:09",
+    "dial-disk-relocate@duck.com": "2026-04-05T05:33:16",
+    "scion-blush-envy@duck.com": "2026-04-05T05:33:23",
+    "jugular-appear-wow@duck.com": "2026-04-05T05:33:39",
+    "bath-boozy-dreamy@duck.com": "2026-04-05T05:33:49",
+    "haste-python-truth@duck.com": "2026-04-05T05:33:53",
+    "widow-freezing-sip@duck.com": "2026-04-05T05:34:00",
+    "cocoa-affix-caress@duck.com": "2026-04-05T05:34:07",
+    "nerd-shelf-gag@duck.com": "2026-04-05T05:34:23",
+    "copious-drew-race@duck.com": "2026-04-05T05:34:32",
+    "conform-lent-wok@duck.com": "2026-04-05T05:34:39",
+    "wise-gab-marxism@duck.com": "2026-04-05T05:34:43",
+    "rice-savage-gilled@duck.com": "2026-04-05T05:34:51",
+    "mushy-step-gumming@duck.com": "2026-04-05T05:35:10",
+    "blurt-subway-borax@duck.com": "2026-04-05T05:35:16",
+    "oozy-capably-spied@duck.com": "2026-04-05T05:35:22",
+    "dimmer-aqua-defile@duck.com": "2026-04-05T05:35:27",
+    "snipping-keg-plus@duck.com": "2026-04-05T05:35:37",
+    "grip-gilled-puppy@duck.com": "2026-04-05T05:35:54",
+    "gaming-yield-tank@duck.com": "2026-04-05T05:35:59",
+    "feel-cut-uneatable@duck.com": "2026-04-05T05:36:05",
+    "jab-traction-doozy@duck.com": "2026-04-05T05:36:11",
+    "fit-subway-compare@duck.com": "2026-04-05T05:36:21",
+    "late-wages-ribcage@duck.com": "2026-04-05T05:36:38",
+    "quilt-herbs-trough@duck.com": "2026-04-05T05:36:45",
+    "kisser-ditch-agile@duck.com": "2026-04-05T05:36:49",
+    "plot-petunia-slush@duck.com": "2026-04-05T05:36:55",
+    "limb-audio-frying@duck.com": "2026-04-05T05:37:05",
+    "stung-chef-erupt@duck.com": "2026-04-05T05:37:32",
+    "bok-marine-keep@duck.com": "2026-04-05T05:37:32"
   },
-  "active_bearer_index": 0
+  "active_bearer_index": 3
 }
