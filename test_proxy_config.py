@@ -481,18 +481,14 @@ class ProxyNormalizationTests(unittest.TestCase):
         self.assertIn("Diagnose Wildmail", workflow)
         self.assertIn("continue-on-error: true", workflow)
 
-    def test_scheduler_workflow_restores_and_saves_duck_pool_cache(self):
+    def test_scheduler_workflow_uses_repo_duck_pool_not_cache_restore(self):
         workflow = Path(".github/workflows/scheduler.yml").read_text(encoding="utf-8")
-        self.assertIn("permissions:", workflow)
-        self.assertIn("contents: write", workflow)
-        self.assertIn("Restore duck pool cache", workflow)
-        self.assertIn("duckaddress.txt", workflow)
-        self.assertIn("duck_state.json", workflow)
-        self.assertIn("duck-pool-v3-", workflow)
-        self.assertIn("Save duck pool cache", workflow)
+        self.assertIn("Inspect duck pool", workflow)
         self.assertIn("Commit duck pool updates", workflow)
         self.assertIn("git add duckaddress.txt duck_state.json", workflow)
-        self.assertIn("git push origin HEAD:${GITHUB_REF_NAME}", workflow)
+        self.assertNotIn("Restore duck pool cache", workflow)
+        self.assertNotIn("Save duck pool cache", workflow)
+        self.assertNotIn("duck-pool-v3-", workflow)
 
     def test_mailbox_service_factory_supports_cfmail_lamail_tempmail_and_wildmail(self):
         fake_register = object()

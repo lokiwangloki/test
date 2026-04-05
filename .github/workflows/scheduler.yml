@@ -70,17 +70,6 @@ jobs:
             echo "WILDMAIL secrets not configured, skip diagnose"
           fi
 
-      - name: Restore duck pool cache
-        if: ${{ env.MAIL_PROVIDER == 'duckmail' }}
-        uses: actions/cache@v4
-        with:
-          path: |
-            duckaddress.txt
-            duck_state.json
-          key: duck-pool-v3-${{ github.run_id }}
-          restore-keys: |
-            duck-pool-v3-
-
       - name: Restore cfmail accounts cache
         if: ${{ env.MAIL_PROVIDER == 'cfmail' }}
         uses: actions/cache@v4
@@ -198,15 +187,6 @@ jobs:
           else
             python -u auto_scheduler.py
           fi
-
-      - name: Save duck pool cache
-        if: ${{ always() && env.MAIL_PROVIDER == 'duckmail' }}
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            duckaddress.txt
-            duck_state.json
-          key: duck-pool-v3-${{ github.run_id }}
 
       - name: Commit duck pool updates
         if: ${{ always() && env.MAIL_PROVIDER == 'duckmail' }}
