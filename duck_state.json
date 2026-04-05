@@ -1,14 +1,14 @@
 {
   "bearers": {
     "3637659c5f2185f3c2e9fee218a6206c4ff4d7a6e0a6ce1657ebc30235b1956b": {
-      "last_seen": "annex-subtype-boil@duck.com",
-      "last_accepted": "annex-subtype-boil@duck.com",
-      "repeat_count": 2
+      "last_seen": "stole-cultural-fox@duck.com",
+      "last_accepted": "stole-cultural-fox@duck.com",
+      "repeat_count": 3
     },
     "77e82c4b5b1e9ad3b859b145129fceb80aa6fef41baf1f93e249102777359f9d": {
-      "last_seen": "irk-unplug-clerk@duck.com",
-      "last_accepted": "irk-unplug-clerk@duck.com",
-      "repeat_count": 1
+      "last_seen": "onto-wise-resale@duck.com",
+      "last_accepted": "onto-wise-resale@duck.com",
+      "repeat_count": 3
     },
     "22a6da391156a8088afb091f6ada73f89dfd9f7c486d966f8509f05dd43092ee": {
       "last_seen": "phantom-cake-blitz@duck.com",
@@ -18,7 +18,7 @@
     "fafc42d093ca7eb27e15e4f82283ad438a14928fdde9ed24fba01a41d712b609": {
       "last_seen": "gap-regulate-haunt@duck.com",
       "last_accepted": "gap-regulate-haunt@duck.com",
-      "repeat_count": 3
+      "repeat_count": 2
     }
   },
   "recent_api_addresses": {
@@ -218,8 +218,20 @@
     "onion-slick-junior@duck.com": "2026-04-05T07:57:57",
     "doze-purr-said@duck.com": "2026-04-05T07:58:19",
     "tile-strive-stump@duck.com": "2026-04-05T07:59:50",
-    "drench-rigor-gaffe@duck.com": "2026-04-05T08:01:09"
+    "drench-rigor-gaffe@duck.com": "2026-04-05T08:01:09",
+    "stole-cultural-fox@duck.com": "2026-04-05T13:19:13",
+    "fame-corset-tank@duck.com": "2026-04-05T13:19:20",
+    "scrap-ragweed-wish@duck.com": "2026-04-05T13:19:27",
+    "mutt-purge-nimbly@duck.com": "2026-04-05T13:19:33",
+    "tweed-anime-ranged@duck.com": "2026-04-05T13:19:39",
+    "mosaic-spruce-such@duck.com": "2026-04-05T13:19:39",
+    "grid-elves-vending@duck.com": "2026-04-05T13:22:52",
+    "sandy-secret-flask@duck.com": "2026-04-05T13:23:00",
+    "frail-craving-kept@duck.com": "2026-04-05T13:22:02",
+    "onto-wise-resale@duck.com": "2026-04-05T13:22:02",
+    "phantom-cake-blitz@duck.com": "2026-04-05T13:22:52",
+    "gap-regulate-haunt@duck.com": "2026-04-05T13:23:00"
   },
   "reserved_addresses": {},
-  "active_bearer_index": 0
+  "active_bearer_index": 3
 }
